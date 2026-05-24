@@ -1,0 +1,30 @@
+[package]
+name = "crsec-simulation"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "crsec_simulation"
+path = "src/lib.rs"
+
+[[bin]]
+name = "crsec"
+path = "src/main.rs"
+
+[dependencies]
+rand        = { version = "0.8", features = ["small_rng"] }
+csv         = "1.3"
+serde       = { version = "1.0", features = ["derive"] }
+serde_json  = "1.0"
+clap        = { version = "4.5", features = ["derive"] }
+chrono      = "0.4"
+
+# social-simulation framework (socsim) — ABM のエンジン基盤．CRSEC は LLM 駆動
+# エージェントの **非空間** 網モデルなので core + engine + net に加え，LLM ヘルパ
+# 層 socsim-llm を取り込む (socsim-grid は不要)．socsim-llm の "live" feature が
+# ollama + openai 両バックエンド (FallbackClient) を有効化する．具体 commit は
+# Cargo.lock で固定．
+socsim-core   = { git = "https://github.com/akitenkrad/rs-social-simulation-tools", branch = "main", package = "socsim-core" }
+socsim-engine = { git = "https://github.com/akitenkrad/rs-social-simulation-tools", branch = "main", package = "socsim-engine" }
+socsim-net    = { git = "https://github.com/akitenkrad/rs-social-simulation-tools", branch = "main", package = "socsim-net" }
+socsim-llm    = { git = "https://github.com/akitenkrad/rs-social-simulation-tools", branch = "main", package = "socsim-llm", features = ["live"] }
