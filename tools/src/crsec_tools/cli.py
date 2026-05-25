@@ -10,57 +10,34 @@ Usage:
 
 `reproduce`（論文 Fig. 2 の一括再現 / descriptive vs injunctive 深掘り）は Phase 3
 で実装予定（未提供）．
+
+dispatcher の組み立ては共有ヘルパ `socsim_tools.cli.build_dispatcher` に委譲する
+（prog 名・サブコマンド・ヘルプ文・argv ルーティングは従来と同一）．可視化/設定表示の
+実体（visualize / visualize_sweep / show_experiment_settings）は repo 固有のまま．
 """
 
 from __future__ import annotations
 
-import argparse
-import sys
+from socsim_tools.cli import build_dispatcher
 
-
-def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(
-        prog="crsec-tools",
-        description="Ren et al. (2024) CRSEC 社会規範創発 可視化・分析ツール",
-    )
-    subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser(
-        "visualize",
-        help="単一実行結果（創発曲線・衝突時系列・規範数）の可視化",
-        add_help=False,
-    )
-    subparsers.add_parser(
-        "visualize-sweep",
-        help="スイープ結果（人口×WS-β の創発時刻・最終採用率）の可視化",
-        add_help=False,
-    )
-    subparsers.add_parser(
-        "show-experiment-settings",
-        help="実行結果ディレクトリの設定（config / sweep_config / run_metadata）の表示",
-        add_help=False,
-    )
-
-    argv = sys.argv[1:] if argv is None else argv
-    if not argv or argv[0] in {"-h", "--help"}:
-        parser.parse_args(argv)
-        return
-
-    command = argv[0]
-    rest = argv[1:]
-    if command == "visualize":
-        from crsec_tools.visualize import main as run_main
-
-        run_main(rest)
-    elif command == "visualize-sweep":
-        from crsec_tools.visualize_sweep import main as run_main
-
-        run_main(rest)
-    elif command == "show-experiment-settings":
-        from crsec_tools.show_experiment_settings import main as run_main
-
-        run_main(rest)
-    else:
-        parser.parse_args(argv)
+main = build_dispatcher(
+    prog="crsec-tools",
+    description="Ren et al. (2024) CRSEC 社会規範創発 可視化・分析ツール",
+    subcommands={
+        "visualize": (
+            "単一実行結果（創発曲線・衝突時系列・規範数）の可視化",
+            "crsec_tools.visualize:main",
+        ),
+        "visualize-sweep": (
+            "スイープ結果（人口×WS-β の創発時刻・最終採用率）の可視化",
+            "crsec_tools.visualize_sweep:main",
+        ),
+        "show-experiment-settings": (
+            "実行結果ディレクトリの設定（config / sweep_config / run_metadata）の表示",
+            "crsec_tools.show_experiment_settings:main",
+        ),
+    },
+)
 
 
 if __name__ == "__main__":
