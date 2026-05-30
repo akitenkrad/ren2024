@@ -33,7 +33,14 @@ LLM 出力は socsim の bit 再現性の **外側** にある．設計は二層
 
 ## canonical-norm 同定
 
-「同じ」規範でも LLM のパラフレーズは言い回しが揺れるため，採用率は **canonical key** で規範を束ねる．既定は **決定論的・規則ベース** の正規化（小文字化 → 英数字以外を除去 → ストップワード除去 → 重複除去 → ソート → 連結）で，**追加の LLM 呼び出しを要さず** 指標を決定論コアに保つ．LLM による意味的重複判定は `--canonical-mode llm`（キャッシュ付き）として拡張点に用意してある．
+「同じ」規範でも LLM のパラフレーズは言い回しが揺れるため，採用率は **canonical key** で規範を束ねる．`--canonical-mode {rule|llm}` で方式を選ぶ:
+
+- **`rule`**（既定）— **決定論的・規則ベース** の正規化（小文字化 → 英数字以外を除去 → ストップワード除去 → 重複除去 → ソート → 連結）．**追加の LLM 呼び出しを要さず** 指標を決定論コアに保つ．語順・冠詞・主語の揺れは束ねるが，語彙が重ならないパラフレーズは束ねない．
+- **`llm`** — LLM が «二つの規範表現が同じ規範か» を判定する（キャッシュ付き，`temperature=0`）．語彙が重ならないパラフレーズ（"no smoking indoors" ↔ "please refrain from cigarettes inside"）も束ねる．rule-key 一致時は判定をショートカットして呼び出しを節約し，判定は同じキャッシュ付きクライアントを通るため擬似決定論的である．`rule` 経路はバイト等価のまま変わらない．
+
+## descriptive vs injunctive
+
+指標は採用率と相異規範数を規範の型別 — **命令的 (injunctive)**（「X すべき」）と **記述的 (descriptive)**（「皆が X する」） — に分割し，型別の創発時刻も記録する．これにより論文の順序効果（Fact 7）— injunctive 規範が descriptive 規範より先に創発する — を可視化する．`reproduce` サブコマンドがその対比を報告し，Python `reproduce` ツールが 2 本の型別トラジェクトリを描画する．
 
 ## インストールとクイックスタート
 
@@ -51,6 +58,16 @@ export OLLAMA_MODEL=llama3.2:latest
 # 小規模な社会を実行（Watts–Strogatz, 起業家 3 名）
 cargo run --release -- run --population 10 --entrepreneurs 3 --network ws --ws-k 4 --ws-beta 0.1 --rounds 48 --seed 42
 
+# LLM 判定による canonical-norm 同定（キャッシュ付き）; rule 既定はバイト等価
+cargo run --release -- run --canonical-mode llm --population 10 --rounds 48 --seed 42
+
+# 論文の見出し的知見を一括再現（創発 / 統合 / 衝突 rise-then-fall / Fact 7）
+cargo run --release -- reproduce --population 12 --runs 3 --rounds 48 --seed 42
+
+# オフライン（live LLM 不要）: --mock で run / reproduce を決定論的 scripted クライアントで駆動
+cargo run --release -- reproduce --mock
+cargo run --release -- run --mock --population 8 --rounds 12
+
 # オフラインスモーク（live LLM 不要）: mock 駆動でパイプライン全体を実行
 cargo run --release --example mock_smoke -- results
 
@@ -60,6 +77,9 @@ uv sync
 # 直近の実行を可視化（創発曲線・衝突時系列・相異規範数）
 uv run crsec-tools visualize
 
+# 論文の知見を一括再現して図を描く（--mock でオフライン）
+uv run crsec-tools reproduce --run --mock
+
 # 実行設定と LLM メタデータを確認
 uv run crsec-tools show-experiment-settings --results-dir results/latest
 ```
@@ -67,13 +87,13 @@ uv run crsec-tools show-experiment-settings --results-dir results/latest
 ## ドキュメント
 
 - [ユースケース](docs/usecases.ja.md) — 本プロジェクトでできること（他ドキュメントへの導線）．
-- [CLI](docs/cli.ja.md) — Rust CLI の `run` / `sweep` サブコマンドとフラグ，LLM 環境変数．
+- [CLI](docs/cli.ja.md) — Rust CLI の `run` / `sweep` / `reproduce` サブコマンドとフラグ（`--canonical-mode` / `--mock` 含む），LLM 環境変数．
 - [可視化](docs/visualization.ja.md) — Python `crsec-tools` と出力の解釈．
 - [アーキテクチャ](docs/architecture.ja.md) — リポジトリ構成・二層決定論・socsim/`socsim-llm`/`socsim-net` 基盤・CRSEC ライフサイクル→メカニズム対応・指標・参考文献．
 
 ## スコープ
 
-本リポジトリは **Phase 1**（`CrsecWorld` + 6 ライフサイクルメカニズム，Ollama→OpenAI フォールバック + キャッシュの二層 LLM クライアント，`run` サブコマンド，創発指標）と **Phase 2**（人口 × WS-β の `sweep`，Python `visualize` / `visualize-sweep` / `show-experiment-settings`）を実装する．論文 Fig. 2 一括再現（`reproduce`）・descriptive vs injunctive の深掘り・基本 θ 規則を超えた長期抽象統合は将来課題（Phase 3）とし，拡張点を随所に残してある．
+本リポジトリは `CrsecWorld` と 6 ライフサイクルメカニズム，二層 LLM クライアント（Ollama→OpenAI フォールバック + キャッシュ），`run` / `sweep` / `reproduce` サブコマンド，descriptive vs injunctive 分割を含む創発指標，canonical-norm 同定の両方式（`rule` / `llm`），Python `visualize` / `visualize-sweep` / `show-experiment-settings` / `reproduce` ツールを実装する．長期抽象統合は基本 θ 規則を用い，LLM ベースの抽象化は拡張点として明示してある．
 
 ## ライセンス
 

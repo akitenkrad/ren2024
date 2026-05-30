@@ -8,11 +8,11 @@
 //! ・収束 / request_stop（適格集合が安定したら停止）
 //! ・RNG 決定論（同一シード + 同一 mock → 完全再現）
 
-use crsec_simulation::config::{Config, Network};
+use crsec_simulation::config::{CanonicalMode, Config, Network};
 use crsec_simulation::llm::{wrap_client, CrsecClient};
 use crsec_simulation::metrics::time_to_emergence;
 use crsec_simulation::simulation::run_with_client;
-use crsec_simulation::world::canonical_key;
+use crsec_simulation::world::{canonical_key, Canonicalizer};
 
 use socsim_llm::mock::ScriptedClient;
 use socsim_llm::PromptCache;
@@ -123,6 +123,57 @@ fn paraphrased_norms_bucket_to_same_canonical() {
         a, b,
         "語順・主語・冠詞の揺れは同一 canonical key へ束ねられる"
     );
+}
+
+// --------------------------------------------------------------------------- //
+// canonical-mode: rule（既定）は従来の canonical_key とバイト等価 / llm は語彙非重複の
+// パラフレーズも束ねる
+// --------------------------------------------------------------------------- //
+
+#[test]
+fn canonical_mode_rule_matches_legacy_canonical_key() {
+    // rule モードの Canonicalizer は canonical_key へ純委譲（バイト等価）．
+    let canon = Canonicalizer::rule();
+    for s in [
+        "no smoking indoors",
+        "Indoors, you should not be smoking",
+        "keep the library quiet please",
+    ] {
+        assert_eq!(canon.canonicalize(s), canonical_key(s));
+    }
+}
+
+#[test]
+fn canonical_mode_rule_run_is_unchanged() {
+    // 既定（rule）で paraphrase mock を回しても従来どおり 1 規範へ束ねられる．
+    // （canonicalizer 経由でも rule 経路は従来挙動と一致することの回帰確認）．
+    let mut cfg = base_config();
+    cfg.canonical_mode = CanonicalMode::Deterministic;
+    let result = run_with_client(&cfg, scripted(true)).unwrap();
+    let last = result.metrics_history.last().unwrap();
+    assert!(
+        last.n_distinct_norms <= 2,
+        "rule canonical で束ねられる (distinct={})",
+        last.n_distinct_norms
+    );
+}
+
+#[test]
+fn canonical_mode_llm_buckets_lexically_disjoint_paraphrases() {
+    // 語彙が全く重ならない 2 表現（rule では別キー）を，LLM judge mock が «同じ規範» と
+    // 判定して 1 つに束ねる．rule モードとの差分を直接確認する．
+    let a = "no smoking indoors";
+    let b = "please refrain from cigarettes inside";
+    // rule では別キー（語彙非重複）．
+    assert_ne!(canonical_key(a), canonical_key(b));
+    // LLM judge mock: «喫煙» 系どうしを同一規範とみなす．
+    let canon = Canonicalizer::llm(|x: &str, y: &str| {
+        let smoke = |s: &str| s.contains("smok") || s.contains("cigarette");
+        smoke(x) && smoke(y)
+    });
+    let ka = canon.canonicalize(a);
+    let kb = canon.canonicalize(b);
+    assert_eq!(ka, kb, "llm canonical は語彙非重複でも同一規範を束ねる");
 }
 
 // --------------------------------------------------------------------------- //

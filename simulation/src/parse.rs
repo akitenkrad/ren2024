@@ -97,9 +97,23 @@ pub fn promote_decision(text: &str) -> bool {
     consistent && type_ok && !duplicate && !conflicts
 }
 
+/// 規範同定（`--canonical-mode llm`）の判定: `SAME: yes|no` を真偽へ．
+///
+/// `SAME` 行が無ければ保守的に「異なる規範」（false）とみなす．
+pub fn same_norm(text: &str) -> bool {
+    yes(text, "SAME")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn same_norm_parses_decision() {
+        assert!(same_norm("SAME: yes"));
+        assert!(!same_norm("SAME: no"));
+        assert!(!same_norm("(no SAME line)"));
+    }
 
     #[test]
     fn field_is_case_insensitive() {

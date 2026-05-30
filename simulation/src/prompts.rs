@@ -157,3 +157,23 @@ pub fn evaluation_prompt(
         norms = norm_digest(existing_qualified, 6),
     )
 }
+
+/// 規範同定（`--canonical-mode llm`）: «二つの規範表現は同じ社会規範か» を問う．
+///
+/// LLM ベースの canonical-norm-identity に使う．語順・冠詞・主語の揺れだけでなく，
+/// 語彙が重ならないパラフレーズ（"no smoking" ↔ "refrain from cigarettes"）も同一規範
+/// として束ねられる点が決定論的 keyword-set 正規化との違い．出力契約は単純な
+/// `SAME: yes|no`（[`crate::parse::same_norm`] がパースする）．
+pub fn same_norm_prompt(a: &str, b: &str) -> String {
+    format!(
+        "You compare two short statements of social norms and decide whether they express \
+         the SAME underlying norm (same prescribed/observed behaviour), ignoring wording, \
+         word order, articles, and subject.\n\
+         Norm A: \"{a}\"\n\
+         Norm B: \"{b}\"\n\n\
+         Reply in EXACTLY this format, nothing else:\n\
+         SAME: <yes if they are the same norm, no otherwise>",
+        a = a,
+        b = b,
+    )
+}

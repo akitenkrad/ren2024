@@ -1,11 +1,15 @@
 //! Ren et al. (2024) "Emergence of Social Norms in Generative Agent Societies
 //! (CRSEC)" — 再現実験の CLI エントリポイント．
 //!
-//! `run`   : 単一設定で規範ライフサイクルを実行し，創発曲線・衝突時系列を出力する．
-//! `sweep` : 人口 × WS-β（× ネットワーク）を走査し，創発時刻・最終採用率を集計する．
+//! `run`       : 単一設定で規範ライフサイクルを実行し，創発曲線・衝突時系列を出力する．
+//! `sweep`     : 人口 × WS-β（× ネットワーク）を走査し，創発時刻・最終採用率を集計する．
+//! `reproduce` : 論文の見出し的知見（社会規範の創発・統合・衝突 rise-then-fall・
+//!               Fact 7 の injunctive→descriptive 順序）を一括再現し，観測 vs 論文の
+//!               PASS/off を `reproduce_summary.json` に集計する．
 //!
-//! Phase 3 の `reproduce`（Fig. 2 一括再現 + descriptive vs injunctive 深掘り）は未実装
-//! （拡張点）．
+//! `run --mock` / `reproduce --mock` はライブ LLM を呼ばず決定論的 scripted mock で
+//! 駆動する（サンドボックス・CI 用）．`--canonical-mode llm` は規範同定を LLM 意味判定へ
+//! 切り替える（既定 rule は決定論的 canonical_key へ純委譲）．
 
 use std::fs;
 use std::path::Path;
@@ -16,8 +20,9 @@ use socsim_results::{refresh_latest_symlink, timestamp, write_csv, write_json};
 use crsec_simulation::config::{
     parse_canonical_mode, parse_network, CanonicalMode, Config, LlmSettings, Network,
 };
+use crsec_simulation::reproduce::{reproduce, ReproduceArgs as ReproduceParams};
 use crsec_simulation::simulation::{
-    ensure_output_dir, run, save_metrics, save_norms, save_run_metadata,
+    ensure_output_dir, run, run_mock, save_metrics, save_norms, save_run_metadata,
 };
 
 // ---------------------------------------------------------------------------
@@ -40,6 +45,8 @@ enum Commands {
     Run(RunArgs),
     /// 人口 × WS-β を走査し，創発時刻・最終採用率を集計する．
     Sweep(SweepArgs),
+    /// 論文の見出し的知見を一括再現し reproduce_summary.json に集計する．
+    Reproduce(ReproduceArgs),
 }
 
 #[derive(Parser, Debug)]
@@ -91,6 +98,11 @@ struct RunArgs {
     /// 規範同定の方式（deterministic / llm）．
     #[arg(long, default_value = "deterministic")]
     canonical_mode: String,
+
+    /// LLM を呼ばず決定論的 scripted mock で駆動する（オフライン検証用）．
+    /// サンドボックス・CI では `--mock` を付ける（ライブ LLM 不要）．
+    #[arg(long, default_value_t = false)]
+    mock: bool,
 
     /// 乱数シード（省略時はランダム; socsim コア層のみ支配）．
     #[arg(long)]
@@ -178,6 +190,74 @@ struct SweepArgs {
     /// プロンプト→応答キャッシュの保存先（sweep 全体で共有しヒット率を高める）．
     #[arg(long, default_value = ".llm_cache/cache.json")]
     cache_path: String,
+
+    /// 結果出力ベースディレクトリ．
+    #[arg(long, default_value = "results")]
+    output_dir: String,
+}
+
+#[derive(Parser, Debug)]
+struct ReproduceArgs {
+    /// 人口（エージェント数 N）．
+    #[arg(long, default_value_t = 12)]
+    population: usize,
+
+    /// 規範起業家の人数．
+    #[arg(long, default_value_t = 3)]
+    entrepreneurs: usize,
+
+    /// 社会接続トポロジ（ws / er / ba）．
+    #[arg(long, default_value = "ws")]
+    network: String,
+
+    /// WS の各ノードの初期次数 k（偶数）．
+    #[arg(long, default_value_t = 4)]
+    ws_k: usize,
+
+    /// WS の再配線確率 β．
+    #[arg(long, default_value_t = 0.1)]
+    ws_beta: f64,
+
+    /// ラウンド数 T．
+    #[arg(long, default_value_t = 48)]
+    rounds: usize,
+
+    /// 各条件あたりの独立試行数．
+    #[arg(long, default_value_t = 3)]
+    runs: usize,
+
+    /// 採用率の創発しきい．
+    #[arg(long, default_value_t = 0.9)]
+    emergence_threshold: f64,
+
+    /// 規範同定の方式（deterministic / llm）．
+    #[arg(long, default_value = "deterministic")]
+    canonical_mode: String,
+
+    /// LLM を呼ばず決定論的 scripted mock で駆動する（オフライン検証用）．
+    /// サンドボックス・CI では `--mock` を付ける（ライブ LLM 不要）．
+    #[arg(long, default_value_t = false)]
+    mock: bool,
+
+    /// 軽量モード（N と rounds を縮小; 動作確認用）．
+    #[arg(long, default_value_t = false)]
+    quick: bool,
+
+    /// LLM 生成温度（live 時のみ）．
+    #[arg(long, default_value_t = 0.0)]
+    temperature: f32,
+
+    /// LLM 生成シード（live 時のみ）．
+    #[arg(long, default_value_t = 0)]
+    llm_seed: u64,
+
+    /// プロンプト→応答キャッシュの保存先（live 時のみ; 全条件で共有）．
+    #[arg(long, default_value = ".llm_cache/cache.json")]
+    cache_path: String,
+
+    /// 乱数シード基点（各試行は derive により独立化する）．
+    #[arg(long, default_value_t = 42)]
+    seed: u64,
 
     /// 結果出力ベースディレクトリ．
     #[arg(long, default_value = "results")]
@@ -304,10 +384,18 @@ fn cmd_run(args: RunArgs) {
         "LLM: temp={} llm_seed={} cache={}",
         cfg.llm.temperature, cfg.llm.seed, args.cache_path
     );
-    println!("出力先: {}", cfg.output_dir);
+    println!(
+        "出力先: {}{}",
+        cfg.output_dir,
+        if args.mock { " | MOCK" } else { "" }
+    );
     println!("-------------------------------------------------");
 
-    let result = run(&cfg).unwrap_or_else(|e| panic!("実行に失敗: {}", e));
+    let result = if args.mock {
+        run_mock(&cfg).unwrap_or_else(|e| panic!("mock 実行に失敗: {}", e))
+    } else {
+        run(&cfg).unwrap_or_else(|e| panic!("実行に失敗: {}", e))
+    };
 
     save_metrics(&result.metrics_history, &cfg.output_dir);
     save_norms(&result, &cfg.output_dir);
@@ -510,6 +598,140 @@ fn cmd_sweep(args: SweepArgs) {
 }
 
 // ---------------------------------------------------------------------------
+// reproduce
+// ---------------------------------------------------------------------------
+
+fn cmd_reproduce(args: ReproduceArgs) {
+    let network = parse_network(&args.network).unwrap_or_else(|e| panic!("{}", e));
+    let canonical_mode =
+        parse_canonical_mode(&args.canonical_mode).unwrap_or_else(|e| panic!("{}", e));
+
+    let ts = timestamp();
+    let out_dir = format!("{}/reproduce_{}", args.output_dir, ts);
+    ensure_output_dir(&out_dir);
+    if !args.mock {
+        if let Some(parent) = Path::new(&args.cache_path).parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+    }
+
+    let params = ReproduceParams {
+        population: args.population,
+        entrepreneurs: args.entrepreneurs,
+        network,
+        ws_k: args.ws_k,
+        ws_beta: args.ws_beta,
+        rounds: args.rounds,
+        runs: args.runs,
+        emergence_threshold: args.emergence_threshold,
+        canonical_mode,
+        mock: args.mock,
+        quick: args.quick,
+        temperature: args.temperature,
+        llm_seed: args.llm_seed,
+        cache_path: args.cache_path.clone(),
+        seed: args.seed,
+        output_dir: out_dir.clone(),
+    };
+
+    println!("=== Ren et al. (2024) CRSEC 見出し的知見 一括再現 ===");
+    println!(
+        "N: {} | 起業家: {} | network: {} | runs: {} | T: {} | canonical: {} | mode: {}",
+        args.population,
+        args.entrepreneurs,
+        network.label(),
+        args.runs,
+        args.rounds,
+        canonical_mode.label(),
+        if args.mock { "MOCK" } else { "LIVE" },
+    );
+    println!("出力先: {out_dir}");
+    println!("-------------------------------------------------");
+
+    let out = reproduce(&params);
+    let cell = &out.cell;
+
+    // 代表 run のメトリクス履歴を CSV に保存（Python 側の時系列描画用）．
+    {
+        let path = format!("{out_dir}/metrics.csv");
+        write_csv(&out.representative, &path).expect("metrics.csv の書き込みに失敗");
+    }
+
+    // --- コンソール出力 ---
+    println!(
+        "--- 集計（試行平均; N={} T={}）---",
+        out.population, out.rounds
+    );
+    println!("最終 採用率̄        : {:.3}", cell.mean_final_adoption);
+    println!("最終 遵守率̄        : {:.3}", cell.mean_final_compliance);
+    println!(
+        "相異規範数 ピーク→最終: {:.2} → {:.2}",
+        cell.mean_peak_distinct, cell.mean_final_distinct
+    );
+    println!(
+        "衝突 ピーク→最終     : {:.2} → {:.2}",
+        cell.mean_peak_conflicts, cell.mean_final_conflicts
+    );
+    println!("創発時刻̄ (採用率)   : {:.2}", cell.mean_time_to_emergence);
+    println!(
+        "創発時刻̄ inj / des   : {:.2} / {:.2}  (Fact 7: inj が先)",
+        cell.mean_tte_injunctive, cell.mean_tte_descriptive
+    );
+    println!(
+        "最終採用率̄ inj / des : {:.3} / {:.3}",
+        cell.mean_final_adoption_injunctive, cell.mean_final_adoption_descriptive
+    );
+    println!("収束した試行割合     : {:.2}", cell.converged_frac);
+
+    println!("--- 論文知見アンカー（観測 vs 論文）---");
+    for a in &out.anchors {
+        let hi = if a.target_hi.is_infinite() {
+            "∞".to_string()
+        } else {
+            format!("{:.3}", a.target_hi)
+        };
+        println!(
+            "[{}] {:<56} obs={:.4} target=[{:.3},{}]",
+            if a.pass { "PASS" } else { "OFF " },
+            a.name,
+            a.observed,
+            a.target_lo,
+            hi,
+        );
+    }
+    let n_pass = out.anchors.iter().filter(|a| a.pass).count();
+    println!("-------------------------------------------------");
+    println!("{}/{} アンカーが in-band", n_pass, out.anchors.len());
+
+    // --- reproduce_summary.json ---
+    let summary = serde_json::json!({
+        "timestamp": ts,
+        "mode": if args.mock { "mock" } else { "live" },
+        "config": {
+            "population": out.population,
+            "entrepreneurs": args.entrepreneurs,
+            "network": network.label(),
+            "ws_k": args.ws_k,
+            "ws_beta": args.ws_beta,
+            "rounds": out.rounds,
+            "runs": args.runs,
+            "emergence_threshold": args.emergence_threshold,
+            "canonical_mode": canonical_mode.label(),
+            "seed": args.seed,
+        },
+        "cell": cell,
+        "anchors": out.anchors,
+        "n_pass": n_pass,
+        "n_total": out.anchors.len(),
+    });
+    let path = format!("{out_dir}/reproduce_summary.json");
+    write_json(&summary, &path).expect("reproduce_summary.json の書き込みに失敗");
+    let _ = refresh_latest_symlink(&args.output_dir, &format!("reproduce_{ts}"));
+    println!("サマリ → {path}");
+    println!("代表 run メトリクス → {out_dir}/metrics.csv");
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
@@ -518,5 +740,6 @@ fn main() {
     match cli.command {
         Commands::Run(args) => cmd_run(args),
         Commands::Sweep(args) => cmd_sweep(args),
+        Commands::Reproduce(args) => cmd_reproduce(args),
     }
 }

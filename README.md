@@ -33,7 +33,14 @@ The cache — not the model — is the reproducibility mechanism: a warm cache r
 
 ## Canonical-norm identity
 
-LLM paraphrases of "the same" norm vary in wording, so the adoption rate buckets norms by a **canonical key**. The default is a **deterministic, rule-based** normalisation (lowercase → strip non-alphanumerics → drop stopwords → dedup → sort → join), which requires **no extra LLM calls** and keeps the metric inside the deterministic core. An LLM-based semantic dedup is available behind `--canonical-mode llm` (cached) as an extension point.
+LLM paraphrases of "the same" norm vary in wording, so the adoption rate buckets norms by a **canonical key**, selected with `--canonical-mode {rule|llm}`:
+
+- **`rule`** (default) — a **deterministic, rule-based** normalisation (lowercase → strip non-alphanumerics → drop stopwords → dedup → sort → join). It requires **no extra LLM calls** and keeps the metric inside the deterministic core. It collapses word-order / article / subject variants but not lexically disjoint paraphrases.
+- **`llm`** — an LLM judge decides whether two norm expressions denote the same norm (cached, `temperature=0`). It also merges lexically disjoint paraphrases (e.g. "no smoking indoors" ↔ "please refrain from cigarettes inside"). A rule-key match short-circuits the judge to save calls; the judge runs through the same cached client, so it is pseudo-deterministic. The `rule` path is byte-for-byte unchanged.
+
+## Descriptive vs injunctive
+
+The metrics split the adoption rate and the distinct-norm count by norm type — **injunctive** ("one should …") vs **descriptive** ("people do …") — and record the per-type time-to-emergence. This surfaces the paper's ordering effect (Fact 7): injunctive norms emerge before descriptive ones. The `reproduce` subcommand reports the contrast and the Python `reproduce` tool draws the two type-split trajectories.
 
 ## Install & Quick start
 
@@ -51,6 +58,16 @@ export OLLAMA_MODEL=llama3.2:latest
 # Run a small society (Watts–Strogatz, 3 entrepreneurs)
 cargo run --release -- run --population 10 --entrepreneurs 3 --network ws --ws-k 4 --ws-beta 0.1 --rounds 48 --seed 42
 
+# LLM-judged canonical-norm identity (cached); the rule default is bit-identical
+cargo run --release -- run --canonical-mode llm --population 10 --rounds 48 --seed 42
+
+# Reproduce the paper's headline findings (emergence / consolidation / conflict rise-then-fall / Fact 7)
+cargo run --release -- reproduce --population 12 --runs 3 --rounds 48 --seed 42
+
+# Offline (no live LLM): the --mock flag drives run / reproduce with a deterministic scripted client
+cargo run --release -- reproduce --mock
+cargo run --release -- run --mock --population 8 --rounds 12
+
 # Offline smoke (no live LLM): mock-driven, exercises the whole pipeline
 cargo run --release --example mock_smoke -- results
 
@@ -60,6 +77,9 @@ uv sync
 # Visualize the most recent run (emergence curves, conflict time series, distinct norms)
 uv run crsec-tools visualize
 
+# Reproduce the paper's findings end-to-end and draw the figures (offline with --mock)
+uv run crsec-tools reproduce --run --mock
+
 # Inspect the run's settings and LLM metadata
 uv run crsec-tools show-experiment-settings --results-dir results/latest
 ```
@@ -67,13 +87,13 @@ uv run crsec-tools show-experiment-settings --results-dir results/latest
 ## Documentation
 
 - [Use cases](docs/usecases.md) — what you can do with this project, with pointers to the rest of the docs.
-- [CLI](docs/cli.md) — the Rust CLI: the `run` and `sweep` subcommands and their flags, plus the LLM environment variables.
+- [CLI](docs/cli.md) — the Rust CLI: the `run`, `sweep` and `reproduce` subcommands and their flags (incl. `--canonical-mode` and `--mock`), plus the LLM environment variables.
 - [Visualization](docs/visualization.md) — the Python `crsec-tools` and how to interpret the outputs.
 - [Architecture](docs/architecture.md) — repository structure, the two-layer determinism, the socsim/`socsim-llm`/`socsim-net` framework, the CRSEC life-cycle → mechanism mapping, the metrics, and references.
 
 ## Scope
 
-This repository implements **Phase 1** (the `CrsecWorld` + the six life-cycle mechanisms, the two-layer LLM client with Ollama→OpenAI fallback + caching, the `run` subcommand, and emergence metrics) and **Phase 2** (the `sweep` over population × WS-β, plus the Python `visualize` / `visualize-sweep` / `show-experiment-settings` tools). A one-shot paper reproduction (`reproduce`, Fig. 2 batch), the deeper descriptive-vs-injunctive analysis, and long-term abstraction synthesis beyond the basic θ rule are left as future work (Phase 3); clean extension points are kept throughout.
+The repository covers the `CrsecWorld` and the six life-cycle mechanisms, the two-layer LLM client (Ollama→OpenAI fallback + caching), the `run` / `sweep` / `reproduce` subcommands, the emergence metrics with the descriptive-vs-injunctive split, both canonical-norm-identity modes (`rule` / `llm`), and the Python `visualize` / `visualize-sweep` / `show-experiment-settings` / `reproduce` tools. Long-term abstraction synthesis uses the basic θ rule; LLM-based abstraction is a documented extension point.
 
 ## License
 

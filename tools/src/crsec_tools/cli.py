@@ -4,16 +4,18 @@ Usage:
     crsec-tools visualize [...]
     crsec-tools visualize-sweep [...]
     crsec-tools show-experiment-settings [...]
+    crsec-tools reproduce [...]
 
 各サブコマンドに続く引数は，対応するモジュールの argparse がそのまま受け取る．
 サブコマンドレベルで `--help` を付けると，そのサブコマンド自身のヘルプが表示される．
 
-`reproduce`（論文 Fig. 2 の一括再現 / descriptive vs injunctive 深掘り）は Phase 3
-で実装予定（未提供）．
+`reproduce` は論文の見出し的知見（社会規範の創発・統合・衝突 rise-then-fall・Fact 7 の
+命令的→記述的の創発順序）を一括再現し，観測 vs 論文の PASS/off と図を生成する．
 
 dispatcher の組み立ては共有ヘルパ `socsim_tools.cli.build_dispatcher` に委譲する
-（prog 名・サブコマンド・ヘルプ文・argv ルーティングは従来と同一）．可視化/設定表示の
-実体（visualize / visualize_sweep / show_experiment_settings）は repo 固有のまま．
+（prog 名・サブコマンド・ヘルプ文・argv ルーティングは従来と同一）．可視化/設定表示/
+再現の実体（visualize / visualize_sweep / show_experiment_settings / reproduce_paper）は
+repo 固有のまま．
 """
 
 from __future__ import annotations
@@ -35,6 +37,10 @@ main = build_dispatcher(
         "show-experiment-settings": (
             "実行結果ディレクトリの設定（config / sweep_config / run_metadata）の表示",
             "crsec_tools.show_experiment_settings:main",
+        ),
+        "reproduce": (
+            "論文の見出し的知見（規範の創発・統合・衝突 rise-then-fall・Fact 7）の一括再現 + 図",
+            "crsec_tools.reproduce_paper:main",
         ),
     },
 )

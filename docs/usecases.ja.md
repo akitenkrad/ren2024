@@ -25,9 +25,31 @@ cargo run --release --example mock_smoke -- results
 uv run crsec-tools visualize
 ```
 
-統合テスト（`cargo test`）もこれを使うため，決定論コアはネットワークなしで検証される．
+統合テスト（`cargo test`）もこれを使うため，決定論コアはネットワークなしで検証される．`run` / `reproduce` の `--mock` フラグは同じ scripted クライアントでそれらのサブコマンドを駆動する．
 
-## 3. 感度分析（人口 × ネットワーク密度）
+## 3. 論文の見出し的知見を再現する
+
+規範の創発・統合・衝突 rise-then-fall・descriptive vs injunctive の順序（Fact 7）を一括再現し，観測 vs 論文のアンカーと図を生成する．[CLI](cli.ja.md) の `reproduce` サブコマンドを参照．
+
+```bash
+# オフライン（live LLM 不要）
+uv run crsec-tools reproduce --run --mock
+# live，3 シード
+cargo run --release -- reproduce --population 12 --runs 3 --rounds 48 --seed 42
+uv run crsec-tools reproduce
+```
+
+`descriptive_vs_injunctive.png` は型別採用率トラジェクトリを重ね描きし，命令的規範が記述的規範より先に創発しきいを超えるさまを見られる — [可視化](visualization.ja.md) 参照．
+
+## 4. rule キーの代わりに LLM 判定で規範を束ねる
+
+採用率はパラフレーズを canonical key で束ねる．既定はその決定論的な規則ベースキー．`--canonical-mode llm` ではキャッシュ付き LLM 判定器が «二つの規範表現が同じ規範か» を判定し，語彙が重ならないパラフレーズも束ねる．`rule` 既定はバイト等価．
+
+```bash
+cargo run --release -- run --canonical-mode llm --population 10 --rounds 48 --seed 42
+```
+
+## 5. 感度分析（人口 × ネットワーク密度）
 
 人口と WS 再配線確率を走査し，規範がいつ・どれだけ速く創発するかを見る:
 
@@ -38,7 +60,7 @@ uv run crsec-tools visualize-sweep
 
 ヒートマップ・折れ線は [可視化](visualization.ja.md) を参照．
 
-## 4. 実行が何と通信したかを確認する
+## 6. 実行が何と通信したかを確認する
 
 ```bash
 uv run crsec-tools show-experiment-settings --results-dir results/latest
@@ -46,7 +68,7 @@ uv run crsec-tools show-experiment-settings --results-dir results/latest
 
 設定に加え `run_metadata.json` の LLM メタ（モデル・endpoint・温度・seed・cache-hit 率・収束・創発時刻）を表示する．
 
-## 5. 設計を理解する
+## 7. 設計を理解する
 
 [アーキテクチャ](architecture.ja.md) に二層決定論・CRSEC ライフサイクル→メカニズム対応（明示した LLM 呼び出し統合を含む）・canonical-norm 同定・指標・参考文献を記載．
 

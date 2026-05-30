@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 use socsim_core::AgentId;
 
-use crate::norm::PersonalNorm;
+use crate::norm::{NormType, PersonalNorm};
 use crate::world::canonical_key;
 
 /// 集団の規範DBから «最頻 canonical 規範を適格として持つ割合» を返す（採用率）．
@@ -67,6 +67,57 @@ pub fn n_distinct_norms(norm_db: &BTreeMap<AgentId, Vec<PersonalNorm>>) -> usize
     keys.len()
 }
 
+/// «最頻 canonical 規範を，指定した型 α の適格規範として持つ» エージェント割合．
+///
+/// 記述的 / 命令的の **型別の採用率**（descriptive vs injunctive 深掘り用）．集団が
+/// 空なら 0．canonical key で束ねる点は [`adoption_rate`] と同じだが，対象を当該型の
+/// 適格規範に限定する（論文 Fact 7 の «injunctive が descriptive より先に創発する»
+/// を型別の採用率トラジェクトリで観察するための指標）．
+pub fn adoption_rate_for_type(
+    norm_db: &BTreeMap<AgentId, Vec<PersonalNorm>>,
+    alpha: NormType,
+) -> f64 {
+    let n = norm_db.len();
+    if n == 0 {
+        return 0.0;
+    }
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for norms in norm_db.values() {
+        let mut keys: Vec<String> = norms
+            .iter()
+            .filter(|x| x.qualified() && x.alpha == alpha)
+            .map(|x| canonical_key(&x.content))
+            .collect();
+        keys.sort();
+        keys.dedup();
+        for k in keys {
+            *counts.entry(k).or_insert(0) += 1;
+        }
+    }
+    counts
+        .values()
+        .max()
+        .map(|&c| c as f64 / n as f64)
+        .unwrap_or(0.0)
+}
+
+/// 当該型 α の相異なる canonical 規範数（適格のみ; descriptive/injunctive 別の多様性）．
+pub fn n_distinct_norms_for_type(
+    norm_db: &BTreeMap<AgentId, Vec<PersonalNorm>>,
+    alpha: NormType,
+) -> usize {
+    let mut keys: Vec<String> = Vec::new();
+    for norms in norm_db.values() {
+        for x in norms.iter().filter(|x| x.qualified() && x.alpha == alpha) {
+            let k = canonical_key(&x.content);
+            if !keys.contains(&k) {
+                keys.push(k);
+            }
+        }
+    }
+    keys.len()
+}
+
 /// 1 ラウンド分のメトリクス（metrics.csv の 1 行）．
 #[derive(Debug, Clone, Serialize)]
 pub struct Metrics {
@@ -82,6 +133,14 @@ pub struct Metrics {
     pub n_distinct_norms: usize,
     /// 適格規範を 1 件以上持つエージェント数．
     pub n_qualified_holders: usize,
+    /// 命令的規範の採用率（型別; descriptive vs injunctive 深掘り）．
+    pub adoption_injunctive: f64,
+    /// 記述的規範の採用率（型別）．
+    pub adoption_descriptive: f64,
+    /// 相異なる命令的 canonical 規範数（適格のみ）．
+    pub n_distinct_injunctive: usize,
+    /// 相異なる記述的 canonical 規範数（適格のみ）．
+    pub n_distinct_descriptive: usize,
 }
 
 impl Metrics {
@@ -105,6 +164,10 @@ impl Metrics {
             n_conflicts,
             n_distinct_norms: n_distinct_norms(norm_db),
             n_qualified_holders: holders,
+            adoption_injunctive: adoption_rate_for_type(norm_db, NormType::Injunctive),
+            adoption_descriptive: adoption_rate_for_type(norm_db, NormType::Descriptive),
+            n_distinct_injunctive: n_distinct_norms_for_type(norm_db, NormType::Injunctive),
+            n_distinct_descriptive: n_distinct_norms_for_type(norm_db, NormType::Descriptive),
         }
     }
 }
@@ -159,5 +222,55 @@ mod tests {
     fn time_to_emergence_finds_first() {
         assert_eq!(time_to_emergence(&[0.2, 0.5, 0.9, 1.0], 0.9), Some(2));
         assert_eq!(time_to_emergence(&[0.2, 0.5], 0.9), None);
+    }
+
+    /// テスト行: `(agent_id, &[(content, 型, 適格)])`．
+    type TypedRow<'a> = (u64, &'a [(&'a str, NormType, bool)]);
+
+    /// 型別の採用率・多様性が descriptive / injunctive を分離して数えることを確認する．
+    fn typed_db(rows: &[TypedRow<'_>]) -> BTreeMap<AgentId, Vec<PersonalNorm>> {
+        let mut m = BTreeMap::new();
+        for &(id, norms) in rows {
+            let v = norms
+                .iter()
+                .map(|&(c, a, q)| PersonalNorm::new(c, 50, a, q, q))
+                .collect();
+            m.insert(AgentId(id), v);
+        }
+        m
+    }
+
+    #[test]
+    fn typed_adoption_separates_descriptive_and_injunctive() {
+        // 3 名: 全員が injunctive «no smoking» を適格保有 (採用率 1.0)．
+        // descriptive «people chat» は 1 名のみ (採用率 1/3)．
+        let m = typed_db(&[
+            (
+                0,
+                &[
+                    ("no smoking indoors", NormType::Injunctive, true),
+                    ("people chat loudly", NormType::Descriptive, true),
+                ],
+            ),
+            (1, &[("no smoking indoors", NormType::Injunctive, true)]),
+            (2, &[("no smoking indoors", NormType::Injunctive, true)]),
+        ]);
+        assert!((adoption_rate_for_type(&m, NormType::Injunctive) - 1.0).abs() < 1e-12);
+        assert!((adoption_rate_for_type(&m, NormType::Descriptive) - 1.0 / 3.0).abs() < 1e-12);
+        assert_eq!(n_distinct_norms_for_type(&m, NormType::Injunctive), 1);
+        assert_eq!(n_distinct_norms_for_type(&m, NormType::Descriptive), 1);
+    }
+
+    #[test]
+    fn metrics_compute_exposes_typed_fields() {
+        let m = typed_db(&[
+            (0, &[("no smoking indoors", NormType::Injunctive, true)]),
+            (1, &[("no smoking indoors", NormType::Injunctive, true)]),
+        ]);
+        let metrics = Metrics::compute(&m, 0, 0, 5);
+        assert!((metrics.adoption_injunctive - 1.0).abs() < 1e-12);
+        assert!((metrics.adoption_descriptive - 0.0).abs() < 1e-12);
+        assert_eq!(metrics.n_distinct_injunctive, 1);
+        assert_eq!(metrics.n_distinct_descriptive, 0);
     }
 }

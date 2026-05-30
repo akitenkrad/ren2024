@@ -41,12 +41,14 @@ use crate::llm::{llm_config, CrsecClient};
 use crate::norm::{NormType, PersonalNorm};
 use crate::parse;
 use crate::prompts;
-use crate::world::{canonical_key, CrsecWorld, InteractionEvent};
+use crate::world::{canonical_key, Canonicalizer, CrsecWorld, InteractionEvent};
 
 /// 共有 LLM クライアント（run ドライバとメカニズムで共有）．
 pub type SharedClient = Rc<RefCell<CrsecClient>>;
 /// 共有メタデータコレクタ（cache-hit 率などを run 後に集計）．
 pub type SharedMetadata = Rc<RefCell<MetadataCollector>>;
+/// 共有 canonicalizer（規範同定の方式; rule = 決定論 / llm = 意味判定）．
+pub type SharedCanonicalizer = Rc<Canonicalizer<'static>>;
 
 /// 当ラウンドの遵守者数・衝突数を scratch へ渡す key（run ドライバが読む）．
 pub const SCRATCH_COMPLIED: &str = "complied";
@@ -219,14 +221,21 @@ pub struct SpreadingMechanism {
     client: SharedClient,
     metadata: SharedMetadata,
     settings: LlmSettings,
+    canon: SharedCanonicalizer,
 }
 
 impl SpreadingMechanism {
-    pub fn new(client: SharedClient, metadata: SharedMetadata, settings: LlmSettings) -> Self {
+    pub fn new(
+        client: SharedClient,
+        metadata: SharedMetadata,
+        settings: LlmSettings,
+        canon: SharedCanonicalizer,
+    ) -> Self {
         SpreadingMechanism {
             client,
             metadata,
             settings,
+            canon,
         }
     }
 
@@ -336,11 +345,15 @@ impl Mechanism<CrsecWorld> for SpreadingMechanism {
         }
 
         // バッファを一括適用: 既に（適格/未適格を問わず）同一 canonical の規範を
-        // 持つ受信者には重複追加しない．
+        // 持つ受信者には重複追加しない．canonical 同定は `--canonical-mode` に従う
+        // （rule = 決定論的 canonical_key / llm = LLM 意味判定）．rule では
+        // [`canonical_key`] と完全に同一の束ね方になる（バイト等価）．
         for (receiver, norm) in pending {
             let entry = ctx.world.norm_db.entry(receiver).or_default();
-            let key = canonical_key(&norm.content);
-            let exists = entry.iter().any(|n| canonical_key(&n.content) == key);
+            let key = self.canon.canonicalize(&norm.content);
+            let exists = entry
+                .iter()
+                .any(|n| self.canon.canonicalize(&n.content) == key);
             if !exists {
                 entry.push(norm);
             }
@@ -491,13 +504,16 @@ pub struct ConvergenceMechanism {
     pub window: usize,
     /// 過去の適格 canonical 集合の履歴（直近のみ保持）．
     history: Vec<Vec<String>>,
+    /// 規範同定の方式（rule = 決定論 / llm = 意味判定）．
+    canon: SharedCanonicalizer,
 }
 
 impl ConvergenceMechanism {
-    pub fn new(window: usize) -> Self {
+    pub fn new(window: usize, canon: SharedCanonicalizer) -> Self {
         ConvergenceMechanism {
             window: window.max(1),
             history: Vec::new(),
+            canon,
         }
     }
 }
@@ -510,7 +526,7 @@ impl Mechanism<CrsecWorld> for ConvergenceMechanism {
         &[Phase::PostStep]
     }
     fn apply(&mut self, _phase: Phase, ctx: &mut StepContext<'_, CrsecWorld>) -> Result<()> {
-        let current = ctx.world.qualified_canonical_set();
+        let current = ctx.world.qualified_canonical_set_with(&self.canon);
         self.history.push(current.clone());
         if self.history.len() > self.window {
             self.history.remove(0);

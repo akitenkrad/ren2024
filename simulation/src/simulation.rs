@@ -22,16 +22,17 @@ use socsim_core::{derive_seed, AgentId, SimRng};
 use socsim_engine::{RandomActivationScheduler, SimulationBuilder};
 use socsim_llm::MetadataCollector;
 
-use crate::config::{Config, Network};
-use crate::llm::{build_live_client, CrsecClient};
+use crate::config::{CanonicalMode, Config, LlmSettings, Network};
+use crate::llm::{build_live_client, llm_config, CrsecClient};
 use crate::mechanisms::{
     empty_norm_db, ComplianceMechanism, ConvergenceMechanism, CreationMechanism,
-    EvaluationMechanism, ResetInteractions, SharedClient, SharedMetadata, SpreadingMechanism,
-    SCRATCH_COMPLIED, SCRATCH_CONFLICTS, SCRATCH_CONVERGED,
+    EvaluationMechanism, ResetInteractions, SharedCanonicalizer, SharedClient, SharedMetadata,
+    SpreadingMechanism, SCRATCH_COMPLIED, SCRATCH_CONFLICTS, SCRATCH_CONVERGED,
 };
 use crate::metrics::{time_to_emergence, Metrics};
 use crate::norm::PersonalNorm;
-use crate::world::{AgentProfile, CrsecWorld};
+use crate::world::{AgentProfile, Canonicalizer, CrsecWorld};
+use crate::{parse, prompts};
 
 /// 網生成・プロフィール/規範起業家割当用 RNG ラベル．
 const RNG_WORLD_INIT: u64 = 0;
@@ -122,11 +123,61 @@ pub fn init_world(cfg: &Config, rng: &mut SimRng) -> CrsecWorld {
     )
 }
 
+/// `--canonical-mode` に応じた共有 canonicalizer を構築する．
+///
+/// - `Deterministic`（既定）: LLM を一切呼ばない rule canonicalizer（`canonical_key`
+///   へ純委譲; rule 経路はバイト等価のまま）．client/metadata/settings は使わない．
+/// - `Llm`: «二つの規範表現が同じ規範か» を判定する LLM judge を注入する．judge は
+///   共有クライアント越しに [`prompts::same_norm_prompt`] を投げ，応答を
+///   [`parse::same_norm`] でパースする（キャッシュ + temperature=0 で擬似決定論）．
+pub fn build_canonicalizer(
+    mode: CanonicalMode,
+    client: SharedClient,
+    metadata: SharedMetadata,
+    settings: LlmSettings,
+) -> SharedCanonicalizer {
+    match mode {
+        CanonicalMode::Deterministic => Rc::new(Canonicalizer::rule()),
+        CanonicalMode::Llm => {
+            let judge = move |a: &str, b: &str| -> bool {
+                let prompt = prompts::same_norm_prompt(a, b);
+                let mut c = client.borrow_mut();
+                match c.complete(&prompt, &llm_config(&settings)) {
+                    Ok(resp) => {
+                        metadata.borrow_mut().record(resp.metadata.clone());
+                        parse::same_norm(&resp.text)
+                    }
+                    // 判定 LLM 呼び出しが失敗したら保守的に «異なる規範»．
+                    Err(_) => false,
+                }
+            };
+            Rc::new(Canonicalizer::llm(judge))
+        }
+    }
+}
+
 /// シミュレーションを実行する（本番 LLM クライアントを構築して駆動）．
 pub fn run(cfg: &Config) -> Result<SimulationResult, String> {
     let client =
         build_live_client(&cfg.llm).map_err(|e| format!("LLM クライアント構築に失敗: {e}"))?;
     run_with_client(cfg, client)
+}
+
+/// オフライン（LLM 不要）で実行する．`reproduce_mock` の決定論的 scripted クライアント
+/// で規範ライフサイクルを駆動する（サンドボックス・CI・`run --mock` 用）．
+///
+/// `--canonical-mode llm` を指定しても，canonicalizer の judge は同じ scripted
+/// クライアント（`reproduce_mock::same_norm_reply`）を通るためライブ LLM は不要．
+pub fn run_mock(cfg: &Config) -> Result<SimulationResult, String> {
+    // mock は in-memory キャッシュなので永続保存をスキップする（cache_path = None）．
+    let mock_cfg = Config {
+        llm: LlmSettings {
+            cache_path: None,
+            ..cfg.llm.clone()
+        },
+        ..cfg.clone()
+    };
+    run_with_client(&mock_cfg, crate::reproduce_mock::build_reproduce_client())
 }
 
 /// 与えられた [`CrsecClient`] でシミュレーションを実行する．
@@ -144,6 +195,16 @@ pub fn run_with_client(cfg: &Config, client: CrsecClient) -> Result<SimulationRe
 
     let shared_client: SharedClient = Rc::new(RefCell::new(client));
     let shared_meta: SharedMetadata = Rc::new(RefCell::new(MetadataCollector::new()));
+
+    // 規範同定の方式（`--canonical-mode`）に応じて canonicalizer を構築する．
+    // rule（既定）は LLM を一切呼ばず [`canonical_key`] へ純委譲（バイト等価）．
+    // llm はキャッシュ付きクライアント越しに «同じ規範か» を判定する．
+    let shared_canon = build_canonicalizer(
+        cfg.canonical_mode,
+        Rc::clone(&shared_client),
+        Rc::clone(&shared_meta),
+        cfg.llm.clone(),
+    );
 
     let mut sim = SimulationBuilder::new(world)
         .scheduler(Box::new(RandomActivationScheduler))
@@ -163,13 +224,17 @@ pub fn run_with_client(cfg: &Config, client: CrsecClient) -> Result<SimulationRe
             Rc::clone(&shared_client),
             Rc::clone(&shared_meta),
             cfg.llm.clone(),
+            Rc::clone(&shared_canon),
         )))
         .add_mechanism(Box::new(EvaluationMechanism::new(
             Rc::clone(&shared_client),
             Rc::clone(&shared_meta),
             cfg.llm.clone(),
         )))
-        .add_mechanism(Box::new(ConvergenceMechanism::new(cfg.convergence_window)))
+        .add_mechanism(Box::new(ConvergenceMechanism::new(
+            cfg.convergence_window,
+            Rc::clone(&shared_canon),
+        )))
         .build();
 
     let mut metrics_history: Vec<Metrics> = Vec::new();

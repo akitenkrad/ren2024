@@ -25,9 +25,31 @@ cargo run --release --example mock_smoke -- results
 uv run crsec-tools visualize
 ```
 
-This is also what the integration tests use (`cargo test`), so the deterministic core is verified without any network.
+This is also what the integration tests use (`cargo test`), so the deterministic core is verified without any network. The `--mock` flag on `run` and `reproduce` drives those subcommands with the same scripted client.
 
-## 3. Sensitivity analysis (population × network density)
+## 3. Reproduce the paper's headline findings
+
+Reproduce norm emergence, consolidation, the conflict rise-then-fall, and the descriptive-vs-injunctive ordering (Fact 7) in one shot, with observed-vs-paper anchors and figures. See the [CLI](cli.md) `reproduce` subcommand.
+
+```bash
+# Offline (no live LLM)
+uv run crsec-tools reproduce --run --mock
+# Live, three seeds
+cargo run --release -- reproduce --population 12 --runs 3 --rounds 48 --seed 42
+uv run crsec-tools reproduce
+```
+
+The `descriptive_vs_injunctive.png` figure overlays the per-type adoption trajectories so you can see injunctive norms crossing the emergence threshold before descriptive ones — see [Visualization](visualization.md).
+
+## 4. Bucket norms by an LLM judge instead of the rule key
+
+The adoption rate buckets paraphrases by a canonical key. By default that key is the deterministic rule-based one; `--canonical-mode llm` instead asks a cached LLM judge whether two norm expressions are the same norm, which also merges lexically disjoint paraphrases. The `rule` default is byte-identical.
+
+```bash
+cargo run --release -- run --canonical-mode llm --population 10 --rounds 48 --seed 42
+```
+
+## 5. Sensitivity analysis (population × network density)
 
 Sweep the population and the WS rewiring probability to see when norms emerge and how fast:
 
@@ -38,7 +60,7 @@ uv run crsec-tools visualize-sweep
 
 See [Visualization](visualization.md) for the heatmaps and curves.
 
-## 4. Inspect exactly what a run talked to
+## 6. Inspect exactly what a run talked to
 
 ```bash
 uv run crsec-tools show-experiment-settings --results-dir results/latest
@@ -46,7 +68,7 @@ uv run crsec-tools show-experiment-settings --results-dir results/latest
 
 This prints the config plus the LLM metadata (model, endpoint, temperature, seed, cache-hit rate, convergence, time-to-emergence) from `run_metadata.json`.
 
-## 5. Understand the design
+## 7. Understand the design
 
 The [Architecture](architecture.md) doc covers the two-layer determinism, the CRSEC life-cycle → mechanism mapping (including the documented LLM-call consolidation), the canonical-norm identity, the metrics, and references.
 

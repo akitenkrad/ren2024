@@ -8,21 +8,23 @@
 ren2024/
 ├── simulation/                  Rust crate `crsec-simulation` (binary `crsec`)
 │   ├── src/
-│   │   ├── main.rs              CLI (clap): run / sweep
+│   │   ├── main.rs              CLI (clap): run / sweep / reproduce
 │   │   ├── lib.rs               public modules
 │   │   ├── config.rs            Config, Network{ws|er|ba}, CanonicalMode, LlmSettings
 │   │   ├── norm.rs              PersonalNorm 5-tuple ⟨c,u,α,s_act,s_val⟩, NormType
-│   │   ├── world.rs            CrsecWorld (WorldState), AgentProfile, InteractionEvent, canonical_key
+│   │   ├── world.rs            CrsecWorld (WorldState), AgentProfile, InteractionEvent, canonical_key, Canonicalizer
 │   │   ├── llm.rs              CrsecClient = CachingClient<Box<dyn LlmClient>> (Ollama→OpenAI + cache)
 │   │   ├── prompts.rs          CRSEC LLM-operation prompts (KEY: value contract)
 │   │   ├── parse.rs            lenient parser for the structured LLM responses
 │   │   ├── mechanisms.rs       the six life-cycle mechanisms
-│   │   ├── simulation.rs       init_world + run driver + output writers
-│   │   └── metrics.rs          adoption / compliance / conflicts / distinct norms / time-to-emergence
+│   │   ├── simulation.rs       init_world + run / run_mock drivers + canonicalizer wiring + output writers
+│   │   ├── metrics.rs          adoption / compliance / conflicts / distinct norms (incl. per-type) / time-to-emergence
+│   │   ├── reproduce.rs        the reproduce subcommand: averaged trajectory + observed-vs-paper anchors
+│   │   └── reproduce_mock.rs   deterministic scripted client for offline run / reproduce
 │   ├── examples/mock_smoke.rs  offline (no live LLM) smoke run
 │   └── tests/integration_test.rs   mock-driven integration tests
 ├── tools/                       Python package `crsec-tools` (module `crsec_tools`)
-│   └── src/crsec_tools/{cli,visualize,visualize_sweep,show_experiment_settings}.py
+│   └── src/crsec_tools/{cli,visualize,visualize_sweep,show_experiment_settings,reproduce_paper}.py
 ├── docs/                        bilingual docs (this directory)
 └── results/                     run-time outputs (gitignored)
 ```
@@ -57,7 +59,10 @@ One tick = one round in which every agent passes through create / comply / sprea
 
 ## Canonical-norm identity
 
-`world::canonical_key` reduces a norm's content to a deterministic keyword set (lowercase → split on non-alphanumerics → drop stopwords → dedup → sort → join). The adoption rate and distinct-norm count bucket by this key, so paraphrases that reduce to the same keyword set count as one norm — with **no extra LLM calls**. `--canonical-mode llm` is reserved for a cached LLM dedup (extension point).
+`world::Canonicalizer` decides whether two norm expressions are "the same" norm, with the method chosen by `--canonical-mode`:
+
+- **`rule`** (default) — pure delegation to `world::canonical_key`, which reduces content to a deterministic keyword set (lowercase → split on non-alphanumerics → drop stopwords → dedup → sort → join). The adoption rate, distinct-norm count, the spreading dedup and the convergence set all bucket by this key, with **no extra LLM calls**; this path is byte-identical to the pre-`Canonicalizer` code.
+- **`llm`** — a cached LLM judge (`prompts::same_norm_prompt`, parsed by `parse::same_norm`) answers "same norm?" against a registry of seen representatives, merging even lexically disjoint paraphrases. A rule-key match short-circuits the judge; the judge runs through the shared cached client, so it stays pseudo-deterministic. The canonicalizer is shared (`Rc`) by the spreading dedup and the convergence mechanism.
 
 ## Metrics
 
@@ -67,11 +72,15 @@ One tick = one round in which every agent passes through create / comply / sprea
 | `compliance_rate` | fraction of agents that complied (COMPLY=yes) this round |
 | `n_conflicts` | number of conflicts detected this round (DetectConflict=T) |
 | `n_distinct_norms` | number of distinct canonical norms (qualified only) |
+| `adoption_injunctive` / `adoption_descriptive` | per-type adoption rate (injunctive vs descriptive) |
+| `n_distinct_injunctive` / `n_distinct_descriptive` | per-type distinct canonical norm count |
 | `time_to_emergence` | first round where `adoption_rate ≥ emergence_threshold` (default 0.9) |
+
+The per-type columns drive the descriptive-vs-injunctive deep dive: the `reproduce` subcommand compares the per-type time-to-emergence (injunctive precedes descriptive) and the Python `reproduce` tool draws the two trajectories.
 
 ## Qualitative reproduction targets
 
-The local model (`llama3.2:latest`) differs from the paper's GPT-3.5/4, so we target the **pattern**, not the numbers: adoption rises toward 1.0; the conflict count rises early then declines; injunctive norms emerge before descriptive ones.
+The local model (`llama3.2:latest`) differs from the paper's GPT-3.5/4, so we target the **pattern**, not the numbers: adoption rises toward 1.0; the distinct-norm count consolidates; the conflict count rises early then declines; injunctive norms emerge before descriptive ones. The `reproduce` subcommand scores these as observed-vs-paper anchors and writes `reproduce_summary.json`.
 
 ## References
 
