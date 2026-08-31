@@ -17,16 +17,18 @@ ren2024/
 │   │   ├── prompts.rs          CRSEC LLM-operation prompts (KEY: value contract)
 │   │   ├── parse.rs            lenient parser for the structured LLM responses
 │   │   ├── mechanisms.rs       the six life-cycle mechanisms
-│   │   ├── simulation.rs       init_world + run / run_mock drivers + canonicalizer wiring + output writers
+│   │   ├── simulation.rs       init_world + run_with_client driver + canonicalizer wiring
+│   │   ├── record.rs           recording into runvault (experiment name / paper metadata / llm block / metrics / norm events)
 │   │   ├── metrics.rs          adoption / compliance / conflicts / distinct norms (incl. per-type) / time-to-emergence
-│   │   ├── reproduce.rs        the reproduce subcommand: averaged trajectory + observed-vs-paper anchors
+│   │   ├── reproduce.rs        reproduce aggregation: per-trial extraction + averaged cell + observed-vs-paper anchors + paper values
 │   │   └── reproduce_mock.rs   deterministic scripted client for offline run / reproduce
 │   ├── examples/mock_smoke.rs  offline (no live LLM) smoke run
 │   └── tests/integration_test.rs   mock-driven integration tests
 ├── tools/                       Python package `crsec-tools` (module `crsec_tools`)
-│   └── src/crsec_tools/{cli,visualize,visualize_sweep,show_experiment_settings,reproduce_paper}.py
+│   └── src/crsec_tools/{cli,visualize,visualize_sweep,sweep_summary,show_experiment_settings,reproduce_paper}.py
 ├── docs/                        bilingual docs (this directory)
-└── results/                     run-time outputs (gitignored)
+└── results/                     runvault results root (gitignored)
+    └── crsec/<subcommand>_<timestamp>_<config_hash>_<uid>/   run directory
 ```
 
 ## Two-layer determinism
@@ -36,7 +38,9 @@ socsim's core is deterministic and LLM-free; LLM output is not bit-reproducible.
 - **Deterministic socsim core (lower layer).** From a single root seed two streams are derived: `derive_seed(root,&[0])` initialises the world (network generation, profile + entrepreneur assignment), and `derive_seed(root,&[1])` drives the engine (activation order via `RandomActivationScheduler`, conversation/observation partner sampling via `ctx.rng`). The metrics and the canonical-norm identity are pure functions of state, so they are deterministic too.
 - **Non-deterministic LLM layer (upper layer).** Confined to the mechanisms via `CrsecClient = CachingClient<Box<dyn LlmClient>>`. The backend is `FallbackClient<OllamaClient, OpenAiClient>` boxed to `Box<dyn LlmClient>` (socsim-llm provides `impl LlmClient for Box<T>`, issue #26, so no local newtype is needed). `temperature=0`, a fixed seed and a `hash(prompt+model)` → response cache pseudo-determinise it.
 
-`run_metadata.json` records the model, endpoint, temperature, seed, cache-hit rate, convergence, final step and time-to-emergence, plus a `determinism_note`.
+The model, provider and temperature live in the `llm` block of runvault's `run.json`; the call count and cache hits are the run-scope metrics `llm_calls` / `llm_cache_hits` / `llm_cache_hit_rate` (a rate is not "0" but undefined when no call was made, so no row is written then). Convergence, the final step and time-to-emergence are run-scope metrics too. The `determinism_note` is neither a number nor a condition, so it stays in `simulation::DETERMINISM_NOTE` and in this document.
+
+The client is built **before** `Run::start` so the `llm` block can be filled: only whoever built the client knows the model name and endpoint (which is why `simulation::run` and `run_mock` are gone).
 
 ## CRSEC life-cycle → mechanism mapping
 

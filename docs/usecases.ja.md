@@ -63,10 +63,10 @@ uv run crsec-tools visualize-sweep
 ## 6. 実行が何と通信したかを確認する
 
 ```bash
-uv run crsec-tools show-experiment-settings --results-dir results/latest
+uv run crsec-tools show-experiment-settings
 ```
 
-設定に加え `run_metadata.json` の LLM メタ（モデル・endpoint・温度・seed・cache-hit 率・収束・創発時刻）を表示する．
+run ディレクトリの条件（`config.json` の `parameters`）に加え，run スコープ指標（収束・最終ステップ・創発時刻）と `run.json` の `llm` ブロック（provider・モデル・温度）・cache-hit 率を表示する．
 
 ## 7. 設計を理解する
 

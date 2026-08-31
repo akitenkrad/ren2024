@@ -9,6 +9,9 @@ dependencies = [
     "pandas>=2.2",
     "networkx>=3.2",
     "socsim-tools",
+    # run ディレクトリの読み取り (runvault path / config.json / metrics.csv /
+    # events.jsonl / 子 run の lineage)．
+    "runvault[read]",
 ]
 
 [project.scripts]

@@ -2,16 +2,27 @@
 """
 visualize.py — Ren et al. (2024) CRSEC 社会規範創発 再現実験 可視化スクリプト
 
-results/latest（または --results_dir 指定先）の metrics.csv を読み，
+runvault の run ディレクトリの metrics.csv を読み，
 (1) 創発曲線（採用率・遵守率のラウンド推移; 論文 Fig. 2 風），
 (2) 社会的衝突数の時系列（初期急増→減少を期待），
 (3) 相異 canonical 規範数の時系列（多様性・収束の指標）
 を生成する．
 
+`--results-dir` を省略すると
+`runvault path --experiment crsec --latest --subcommand run --standalone`
+が返す run ディレクトリを対象にする（`runvault` が PATH にある必要がある）．
+`--standalone` を付けるのは，掃引・再現の子 run と取り違えないためである．
+
+図は run の外（`<results-root>/crsec/figures/<run_slug>/`）に出す．run が終わった後に
+作るものは `manifest.csv` に載らないので，run ディレクトリの中には置かない．
+
+移行前の `results/<timestamp>/` も `--results-dir` に直接渡せばそのまま読める
+（wide な metrics.csv は `t` 列を持ち，runvault の long 形式は `step` 列を持つ）．
+
 Usage:
     uv run crsec-tools visualize
-    uv run crsec-tools visualize --results_dir results/20260524_153000
-    uv run crsec-tools visualize --output_dir out
+    uv run crsec-tools visualize --results-dir "$(runvault path --experiment crsec --latest --subcommand run --standalone)"
+    uv run crsec-tools visualize --output-dir out
 
 Outputs:
     output_dir/
@@ -27,6 +38,10 @@ import os
 
 import matplotlib.pyplot as plt
 import pandas as pd
+from runvault.read import figures_dir, metrics_wide, runvault_path
+
+# runvault の experiment 名（Rust 側 record::EXPERIMENT と揃える）．
+EXPERIMENT = "crsec"
 
 # --------------------------------------------------------------------------- #
 # 日本語フォント設定
@@ -44,10 +59,15 @@ COLOR_NORMS = "#9C27B0"
 
 
 def load_metrics(path: str) -> pd.DataFrame:
-    """metrics.csv を読み込む．"""
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"metrics.csv が見つかりません: {path}")
-    return pd.read_csv(path)
+    """metrics.csv を 1 行 1 ラウンドの形で読み込む．
+
+    runvault の long 形式は時間軸の列名が `step`，移行前の wide 形式は `t` なので，
+    描画側が 1 つの名前だけを知っていれば済むよう `t` に寄せる．
+    """
+    df = metrics_wide(path)
+    if "step" in df.columns:
+        df = df.rename(columns={"step": "t"})
+    return df
 
 
 def save_emergence_curves(df: pd.DataFrame, out_path: str) -> None:
@@ -120,14 +140,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--results_dir",
         "--results-dir",
-        default="results/latest",
-        help="Rust シミュレーションの出力ディレクトリ (default: results/latest)",
+        default=None,
+        help="run ディレクトリ (既定: runvault path --experiment crsec --latest "
+        "--subcommand run --standalone)",
+    )
+    p.add_argument(
+        "--results_root",
+        "--results-root",
+        default="results",
+        help="runvault の results ルート (default: results)",
     )
     p.add_argument(
         "--output_dir",
         "--output-dir",
         default=None,
-        help="図の保存先ディレクトリ (default: {results_dir}/figures)",
+        help="図の保存先ディレクトリ (既定: <results-root>/crsec/figures/<run_slug>/)",
     )
     return p.parse_args(argv)
 
@@ -135,8 +162,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
 
-    metrics_path = os.path.join(args.results_dir, "metrics.csv")
-    out_dir = args.output_dir if args.output_dir else os.path.join(args.results_dir, "figures")
+    results_dir = args.results_dir or runvault_path(
+        EXPERIMENT, args.results_root, subcommand="run", standalone=True
+    )
+    metrics_path = os.path.join(results_dir, "metrics.csv")
+    out_dir = args.output_dir if args.output_dir else figures_dir(results_dir)
     os.makedirs(out_dir, exist_ok=True)
 
     print("=== Ren et al. (2024) CRSEC 社会規範創発 可視化 ===")

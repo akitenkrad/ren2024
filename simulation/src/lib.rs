@@ -24,6 +24,7 @@ pub mod metrics;
 pub mod norm;
 pub mod parse;
 pub mod prompts;
+pub mod record;
 pub mod reproduce;
 pub mod reproduce_mock;
 pub mod simulation;

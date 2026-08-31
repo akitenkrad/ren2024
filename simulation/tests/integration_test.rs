@@ -11,6 +11,8 @@
 use crsec_simulation::config::{CanonicalMode, Config, Network};
 use crsec_simulation::llm::{wrap_client, CrsecClient};
 use crsec_simulation::metrics::time_to_emergence;
+use crsec_simulation::reproduce::{self, ReproCell, ReproTrial, ReproduceArgs};
+use crsec_simulation::reproduce_mock::build_reproduce_client;
 use crsec_simulation::simulation::run_with_client;
 use crsec_simulation::world::{canonical_key, Canonicalizer};
 
@@ -239,4 +241,101 @@ fn networks_build_with_correct_population() {
             net
         );
     }
+}
+
+// --------------------------------------------------------------------------- //
+// reproduce: 試行を回して集約する経路（旧 reproduce::reproduce のテストの引き継ぎ）
+// --------------------------------------------------------------------------- //
+
+/// `reproduce` の試行ループ（本体は `main` にあり，そこは run ディレクトリを作る）を
+/// runvault 抜きで再現する．集約と論文知見アンカーの検証はここが持つ．
+fn mock_repro_args(quick: bool) -> ReproduceArgs {
+    ReproduceArgs {
+        population: 8,
+        entrepreneurs: 2,
+        network: Network::WattsStrogatz,
+        ws_k: 4,
+        ws_beta: 0.2,
+        rounds: 16,
+        runs: 2,
+        emergence_threshold: 0.9,
+        canonical_mode: CanonicalMode::Deterministic,
+        mock: true,
+        quick,
+        temperature: 0.0,
+        llm_seed: 0,
+        cache_path: ".llm_cache/cache.json".to_string(),
+        seed: 42,
+    }
+}
+
+fn run_mock_cell(args: &ReproduceArgs) -> (ReproCell, Vec<f64>) {
+    let (population, rounds) = reproduce::effective(args);
+    let mut trials: Vec<ReproTrial> = Vec::new();
+    let mut representative: Vec<f64> = Vec::new();
+    for run_idx in 0..args.runs.max(1) {
+        let seed = reproduce::trial_seed(args.seed, population, run_idx);
+        let cfg = reproduce::trial_config(args, rounds, population, seed);
+        let result = run_with_client(&cfg, build_reproduce_client()).unwrap();
+        if run_idx == 0 {
+            representative = result
+                .metrics_history
+                .iter()
+                .map(|m| m.adoption_rate)
+                .collect();
+        }
+        trials.push(ReproTrial::from_result(
+            &result,
+            args.emergence_threshold,
+            rounds,
+        ));
+    }
+    (ReproCell::from_trials(&trials, args.runs), representative)
+}
+
+#[test]
+fn reproduce_on_mock_emerges_and_passes_anchors() {
+    let args = mock_repro_args(false);
+    let (cell, _) = run_mock_cell(&args);
+    // 規範が創発し採用率が高水準へ（H1）．
+    assert!(
+        cell.mean_final_adoption >= 0.9,
+        "adoption={}",
+        cell.mean_final_adoption
+    );
+    // 全アンカーが in-band（mock は論文の定性的知見を再現するよう設計）．
+    let anchors = reproduce::build_anchors(&cell, args.emergence_threshold);
+    let n_pass = anchors.iter().filter(|a| a.pass).count();
+    assert_eq!(n_pass, anchors.len(), "anchors: {n_pass}/{}", anchors.len());
+}
+
+#[test]
+fn reproduce_fact7_injunctive_not_after_descriptive() {
+    let (cell, _) = run_mock_cell(&mock_repro_args(false));
+    // Fact 7: 命令的の創発時刻 ≤ 記述的の創発時刻．
+    assert!(
+        cell.mean_tte_injunctive <= cell.mean_tte_descriptive,
+        "inj_tte={} des_tte={}",
+        cell.mean_tte_injunctive,
+        cell.mean_tte_descriptive
+    );
+}
+
+#[test]
+fn reproduce_mock_is_deterministic() {
+    let args = mock_repro_args(false);
+    let (a, a_rep) = run_mock_cell(&args);
+    let (b, b_rep) = run_mock_cell(&args);
+    assert_eq!(a.mean_final_adoption, b.mean_final_adoption);
+    assert_eq!(a.mean_tte_injunctive, b.mean_tte_injunctive);
+    assert_eq!(a_rep, b_rep);
+}
+
+#[test]
+fn reproduce_canonical_mode_llm_mock_runs() {
+    let mut args = mock_repro_args(true);
+    args.canonical_mode = CanonicalMode::Llm;
+    let (cell, _) = run_mock_cell(&args);
+    // llm canonical-mode（mock judge）でも創発する．
+    assert!(cell.mean_final_adoption > 0.0);
 }

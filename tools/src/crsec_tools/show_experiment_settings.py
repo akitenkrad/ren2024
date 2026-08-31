@@ -1,19 +1,25 @@
-"""crsec-tools show-experiment-settings — 実行結果の設定表示．
+"""crsec-tools show-experiment-settings — run ディレクトリの設定表示．
 
-results/{timestamp}/config.json (run) または
-results/{timestamp}_sweep/sweep_config.json (sweep) を読み，実行時に使われた全
-パラメータを整形表示する．存在すれば run_metadata.json の LLM 情報
-（モデル・endpoint・温度・seed・cache-hit 率・創発時刻）も併せて表示する．
-`results/latest` も解決される．
+runvault の run ディレクトリの `config.json`（封筒．条件は `parameters` の下）を読み，
+実行時に使われた全パラメータを整形表示する．`run` か `sweep` / `reproduce` かは
+`run.json` の `subcommand` で判別する（`sweep_config.json` はもう書かれない）．
+LLM 情報（provider・モデル・温度）は `run.json` の `llm` ブロック，呼び出し数と
+cache-hit 率は `metrics.csv` の run スコープ指標から採る（`run_metadata.json` は
+書かれない）．
+
+run ディレクトリのパスは次で取れる:
+    runvault path --experiment crsec --latest --subcommand run --standalone
+    runvault path --experiment crsec --latest --subcommand sweep
+    runvault path --experiment crsec --latest --subcommand reproduce
+
+移行前の `results/<timestamp>/` も `--results-dir` に直接渡せば従来どおり読める
+（`run.json` を持たないディレクトリは legacy として扱い，`run_metadata.json` があれば
+そこから LLM 情報を出す）．
 
 Usage:
     crsec-tools show-experiment-settings
-    crsec-tools show-experiment-settings --results-dir results/20260524_153000
-    crsec-tools show-experiment-settings --results-dir results/latest --json
-
-I/O・run 設定テーブル・LLM メタデータブロックは共有ヘルパ `socsim_tools` に委譲する
-（出力はバイト等価）．sweep 設定テーブルと `--json` の `kind` フィールドは crsec 固有
-なので本モジュールに残す．
+    crsec-tools show-experiment-settings --results-dir "$(runvault path --experiment crsec --latest --subcommand sweep)"
+    crsec-tools show-experiment-settings --json
 """
 
 from __future__ import annotations
@@ -23,67 +29,104 @@ import json
 import sys
 from pathlib import Path
 
-from socsim_tools.io import load_run_metadata, resolve_results_dir
-from socsim_tools.settings import render_run_config, render_run_metadata
+from runvault.read import config_parameters, load_run_meta, run_scope_metrics, runvault_path
+
+# runvault の experiment 名（Rust 側 record::EXPERIMENT と揃える）．
+EXPERIMENT = "crsec"
 
 # config キー → 表示ラベル（右コロン位置を揃えるため空白パディング済み）．
-# render_run_config が `f"{label}: {value}"` で整形するため，ラベルは末尾の
-# `: ` を含めず，従来の run レンダラと同じ桁揃えになるようパディングする．
 FIELD_LABELS = {
     "population": "人口 N           ",
+    "population_values": "人口リスト       ",
     "entrepreneurs": "規範起業家       ",
     "network": "ネットワーク     ",
     "ws_k": "WS k             ",
     "ws_beta": "WS β             ",
+    "ws_beta_values": "WS-β リスト      ",
     "er_p": "ER p             ",
     "ba_m": "BA m             ",
+    "runs": "試行数 runs      ",
     "rounds": "ラウンド T       ",
     "synth_threshold": "統合閾値 θ       ",
     "convergence_window": "収束ウィンドウ K ",
     "emergence_threshold": "創発しきい       ",
     "canonical_mode": "規範同定         ",
     "seed": "シード (コア)    ",
+    "mock": "mock             ",
     "llm_temperature": "LLM 温度         ",
     "llm_seed": "LLM seed         ",
-    "output_dir": "出力先           ",
+    "llm_cache_path": "LLM cache_path   ",
 }
 
 
-def _find_config_file(results_dir: Path) -> tuple[Path, str]:
-    """config.json (run) か sweep_config.json (sweep) を探す．"""
-    run_cfg = results_dir / "config.json"
-    sweep_cfg = results_dir / "sweep_config.json"
-    if run_cfg.exists():
-        return run_cfg, "run"
-    if sweep_cfg.exists():
-        return sweep_cfg, "sweep"
-    raise FileNotFoundError(
-        f"設定ファイルが見つかりません: {results_dir}\n"
-        f"  期待されるファイル: config.json (run) または sweep_config.json (sweep)"
-    )
-
-
-def render_sweep_config(cfg: dict, source: Path) -> str:
-    """sweep 設定テーブルを整形する（crsec 固有; リスト項目をそのまま表示する）．"""
+def render_config(cfg: dict, source: Path, kind: str) -> str:
+    """条件テーブルを整形する（キーの並びは FIELD_LABELS の順）．"""
     lines: list[str] = []
     lines.append("=" * 70)
-    lines.append("実行設定 (sweep)")
+    lines.append(f"実行設定 ({kind})")
     lines.append("=" * 70)
     lines.append(f"設定ファイル: {source}")
     lines.append("-" * 70)
-    lines.append(f"人口リスト       : {cfg.get('population_values', [])}")
-    lines.append(f"WS-β リスト      : {cfg.get('ws_beta_values', [])}")
-    lines.append(f"ネットワーク     : {cfg.get('network', '-')}")
-    lines.append(f"規範起業家       : {cfg.get('entrepreneurs', '-')}")
-    lines.append(f"WS k             : {cfg.get('ws_k', '-')}")
-    lines.append(f"試行数 runs      : {cfg.get('runs', '-')}")
-    lines.append(f"ラウンド T       : {cfg.get('rounds', '-')}")
-    lines.append(f"統合閾値 θ       : {cfg.get('synth_threshold', '-')}")
-    lines.append(f"収束ウィンドウ K : {cfg.get('convergence_window', '-')}")
-    lines.append(f"創発しきい       : {cfg.get('emergence_threshold', '-')}")
-    lines.append(f"シード基点       : {cfg.get('seed', '-')}")
-    lines.append(f"LLM 温度         : {cfg.get('llm_temperature', '-')}")
-    lines.append(f"LLM seed         : {cfg.get('llm_seed', '-')}")
+    for field, label in FIELD_LABELS.items():
+        if field in cfg:
+            lines.append(f"{label}: {cfg[field]}")
+    lines.append("=" * 70)
+    return "\n".join(lines)
+
+
+def render_llm(meta: dict | None, scoped: dict[str, float], legacy: dict | None) -> str | None:
+    """LLM 由来情報．
+
+    移行前は `run_metadata.json` が持っていた．provider・モデル・温度は `run.json` の
+    `llm` ブロック，呼び出し数と cache-hit 率は run スコープの指標が正本になった．
+    legacy ディレクトリでは `run_metadata.json` をそのまま読む．
+    """
+    lines: list[str] = ["LLM provenance", "-" * 70]
+    if meta is not None and meta.get("llm") is not None:
+        llm = meta["llm"]
+        lines.append(f"provider         : {llm.get('provider', '-')}")
+        lines.append(f"model            : {llm.get('model_snapshot', '-')}")
+        lines.append(f"temperature      : {llm.get('temperature', '-')}")
+        calls = scoped.get("llm_calls")
+        if calls is not None:
+            hits = scoped.get("llm_cache_hits", 0.0)
+            rate = scoped.get("llm_cache_hit_rate")
+            rate_text = "-" if rate is None else f"{rate * 100:.1f}%"
+            lines.append(f"calls / cache-hit: {int(calls)} / {int(hits)} ({rate_text})")
+    elif legacy is not None:
+        lines.append(f"model            : {legacy.get('llm_model', '-')}")
+        lines.append(f"endpoint         : {legacy.get('llm_endpoint', '-')}")
+        lines.append(f"temperature      : {legacy.get('llm_temperature', '-')}")
+        rate = legacy.get("cache_hit_rate")
+        rate_text = "-" if rate is None else f"{rate * 100:.1f}%"
+        lines.append(
+            f"calls / cache-hit: {legacy.get('total_calls', '-')} /"
+            f" {legacy.get('cache_hits', '-')} ({rate_text})"
+        )
+    else:
+        return None
+    lines.append("=" * 70)
+    return "\n".join(lines)
+
+
+def render_run_scope(scoped: dict[str, float]) -> str | None:
+    """run 全体を 1 つの値で表す指標（収束・最終ステップ・創発時刻）．
+
+    `time_to_emergence` は創発しなかった run では指標そのものが無い（欠測を -1 で
+    埋めない）ので，そのときは «未創発» と出す．
+    """
+    if not scoped:
+        return None
+    lines: list[str] = ["run スコープ指標", "-" * 70]
+    for name, label in (
+        ("n_units", "観測主体数 n_units"),
+        ("converged", "収束             "),
+        ("final_step", "最終ステップ     "),
+    ):
+        if name in scoped:
+            lines.append(f"{label}: {scoped[name]:g}")
+    tte = scoped.get("time_to_emergence")
+    lines.append(f"創発時刻         : {'未創発' if tte is None else f'{tte:g}'}")
     lines.append("=" * 70)
     return "\n".join(lines)
 
@@ -97,8 +140,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--results-dir",
         "--results_dir",
-        default="results/latest",
-        help="実行結果ディレクトリ (default: results/latest)",
+        default=None,
+        help="run ディレクトリ (省略時は runvault path が返す直近の run)",
+    )
+    parser.add_argument(
+        "--results-root",
+        "--results_root",
+        default="results",
+        help="runvault の results ルート (default: results)",
+    )
+    parser.add_argument(
+        "--subcommand",
+        default="run",
+        help="--results-dir 省略時に探すサブコマンド (run / sweep / reproduce)",
     )
     parser.add_argument(
         "--json",
@@ -107,30 +161,54 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    results_dir = resolve_results_dir(args.results_dir)
+    if args.results_dir is None:
+        results_dir = Path(
+            runvault_path(
+                EXPERIMENT,
+                args.results_root,
+                subcommand=args.subcommand,
+                standalone=args.subcommand == "run",
+            )
+        )
+    else:
+        results_dir = Path(args.results_dir)
     if not results_dir.exists():
         print(f"エラー: ディレクトリが存在しません: {results_dir}", file=sys.stderr)
         return 1
 
-    try:
-        cfg_path, kind = _find_config_file(results_dir)
-    except FileNotFoundError as exc:
-        print(f"エラー: {exc}", file=sys.stderr)
+    cfg = config_parameters(results_dir, required=False)
+    if cfg is None:
+        print(f"エラー: config.json が見つかりません: {results_dir}", file=sys.stderr)
         return 1
-    with cfg_path.open() as f:
-        cfg = json.load(f)
-    meta = load_run_metadata(results_dir)
+    meta = load_run_meta(results_dir, required=False)
+    # legacy の wide な metrics.csv は `step` 列を持たないので run スコープ指標は無い．
+    # 同じ値は run_metadata.json 側にある．
+    scoped = run_scope_metrics(results_dir) if meta is not None else {}
+    kind = meta["subcommand"] if meta is not None else "legacy"
+
+    legacy_meta = None
+    legacy_path = results_dir / "run_metadata.json"
+    if meta is None and legacy_path.exists():
+        legacy_meta = json.loads(legacy_path.read_text())
 
     if args.json:
-        payload = {"source": str(cfg_path), "kind": kind, "config": cfg, "run_metadata": meta}
+        payload = {
+            "source": str(results_dir),
+            "kind": kind,
+            "config": cfg,
+            "llm": (meta or {}).get("llm") if meta is not None else legacy_meta,
+            "run_scope_metrics": scoped,
+        }
         print(json.dumps(payload, indent=2, ensure_ascii=False))
-    else:
-        if kind == "run":
-            print(render_run_config(cfg, cfg_path, FIELD_LABELS))
-        else:
-            print(render_sweep_config(cfg, cfg_path))
-        if meta is not None:
-            print(render_run_metadata(meta))
+        return 0
+
+    print(render_config(cfg, results_dir / "config.json", kind))
+    block = render_run_scope(scoped)
+    if block is not None:
+        print(block)
+    block = render_llm(meta, scoped, legacy_meta)
+    if block is not None:
+        print(block)
     return 0
 
 

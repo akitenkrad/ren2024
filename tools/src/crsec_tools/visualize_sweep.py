@@ -2,13 +2,18 @@
 """
 visualize_sweep.py — Ren et al. (2024) CRSEC スイープ結果 可視化スクリプト
 
-results/latest（または --sweep_dir 指定先）の sweep_summary.csv を読み，
-人口 N × WS-β の格子について «創発時刻 (time_to_emergence)» と «最終採用率» を集計し，
-ヒートマップと折れ線で可視化する．
+sweep 親 run の子 run を集めて «1 行 1 (セル × 試行)» の表を組み直し，人口 N × WS-β の
+格子について «創発時刻 (time_to_emergence)» と «最終採用率» を集計してヒートマップと
+折れ線で可視化する．掃引の表はディスクに無い — 同じ値は子 run の `metrics.csv` と
+`config.json` にあるので `sweep_summary` が組み直す．
+
+`--sweep-dir` を省略すると
+`runvault path --experiment crsec --latest --subcommand sweep`
+が返す親 run を対象にする（`runvault` が PATH にある必要がある）．
 
 Usage:
     uv run crsec-tools visualize-sweep
-    uv run crsec-tools visualize-sweep --sweep_dir results/20260524_160000_sweep
+    uv run crsec-tools visualize-sweep --sweep-dir "$(runvault path --experiment crsec --latest --subcommand sweep)"
 
 Outputs:
     output_dir/
@@ -25,18 +30,16 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from runvault.read import figures_dir, runvault_path
+
+from crsec_tools.sweep_summary import sweep_summary_table
+
+# runvault の experiment 名（Rust 側 record::EXPERIMENT と揃える）．
+EXPERIMENT = "crsec"
 
 plt.rcParams["font.family"] = "Hiragino Sans"
 
 COLOR_BG = "#FAFAF8"
-
-
-def load_summary(sweep_dir: str) -> pd.DataFrame:
-    """sweep_summary.csv を読み込む．"""
-    path = os.path.join(sweep_dir, "sweep_summary.csv")
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"sweep_summary.csv が見つかりません: {path}")
-    return pd.read_csv(path)
 
 
 def pivot_metric(df: pd.DataFrame, metric: str, agg: str = "mean") -> pd.DataFrame:
@@ -94,10 +97,10 @@ def save_curves(df: pd.DataFrame, out_path: str) -> None:
     ax.legend(loc="best")
     ax.grid(True, alpha=0.3)
 
-    # 右: 人口に対する創発時刻（未創発 -1 は除外）．
+    # 右: 人口に対する創発時刻（未創発は指標そのものが無く NaN なので除外）．
     ax = axes[1]
     ax.set_facecolor(COLOR_BG)
-    valid = df[df["time_to_emergence"] >= 0]
+    valid = df[df["time_to_emergence"].notna()]
     if not valid.empty:
         agg = valid.groupby("population")["time_to_emergence"].mean()
         ax.plot(agg.index, agg.to_numpy(), color="#2196F3", marker="o")
@@ -120,14 +123,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--sweep_dir",
         "--sweep-dir",
-        default="results/latest",
-        help="スイープ出力ディレクトリ (default: results/latest)",
+        default=None,
+        help="sweep 親 run のディレクトリ (既定: runvault path --experiment crsec "
+        "--latest --subcommand sweep)",
+    )
+    p.add_argument(
+        "--results_root",
+        "--results-root",
+        default="results",
+        help="runvault の results ルート (default: results)",
     )
     p.add_argument(
         "--output_dir",
         "--output-dir",
         default=None,
-        help="図の保存先ディレクトリ (default: {sweep_dir}/figures)",
+        help="図の保存先ディレクトリ (既定: <results-root>/crsec/figures/<run_slug>/)",
     )
     return p.parse_args(argv)
 
@@ -135,24 +145,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
 
-    out_dir = args.output_dir if args.output_dir else os.path.join(args.sweep_dir, "figures")
+    sweep_dir = args.sweep_dir or runvault_path(
+        EXPERIMENT, args.results_root, subcommand="sweep"
+    )
+    out_dir = args.output_dir if args.output_dir else figures_dir(sweep_dir)
     os.makedirs(out_dir, exist_ok=True)
 
     print("=== Ren et al. (2024) CRSEC スイープ可視化 ===")
-    print(f"スイープ: {args.sweep_dir}")
+    print(f"スイープ: {sweep_dir}")
     print(f"出力先:   {out_dir}")
     print("-------------------------------------------------")
 
-    print("[1/3] sweep_summary.csv を読み込み中 ...")
-    df = load_summary(args.sweep_dir)
+    print("[1/3] 子 run から掃引の表を組み直し中 ...")
+    df = sweep_summary_table(sweep_dir)
     print(f"      人口 {df['population'].nunique()} 種 × β {df['ws_beta'].nunique()} 種")
 
     print("[2/3] ヒートマップを保存中 ...")
-    # 未創発 (-1) は NaN 扱いにして平均から除く．
-    df_tte = df.copy()
-    df_tte["time_to_emergence"] = df_tte["time_to_emergence"].where(df_tte["time_to_emergence"] >= 0, np.nan)
+    # 未創発は指標そのものが無い（欠測を -1 や 0 で埋めない）ので，そのまま NaN として
+    # 平均から除かれる．
     save_heatmap(
-        pivot_metric(df_tte, "time_to_emergence"),
+        pivot_metric(df, "time_to_emergence"),
         "創発時刻 time_to_emergence (人口 × β)",
         os.path.join(out_dir, "sweep_time_to_emergence_heatmap.png"),
         cmap="YlGnBu",

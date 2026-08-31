@@ -136,8 +136,6 @@ pub struct Config {
     pub seed: Option<u64>,
     /// LLM レイヤ設定．
     pub llm: LlmSettings,
-    /// 結果出力ディレクトリ．
-    pub output_dir: String,
 }
 
 impl Default for Config {
@@ -158,15 +156,24 @@ impl Default for Config {
             canonical_mode: CanonicalMode::Deterministic,
             seed: Some(42),
             llm: LlmSettings::default(),
-            output_dir: "results".to_string(),
         }
     }
 }
 
-/// `config.json`（run 用）のシリアライズ表現．
+/// run 1 本の実験条件（runvault の `config.json` の `parameters` に入る）．
+///
+/// 旧 `config.json` から `command` と `output_dir` を落とした．どのサブコマンドの実行
+/// なのかは `run.json` が持ち，run ディレクトリが出力先そのものなので，条件ではない．
+///
+/// 代わりに旧 `config.json` に無かった **結果を決める値** を 2 つ足した:
+///
+/// - `mock`: `--mock` は決定論的 scripted クライアントへ切り替える．LLM 応答が丸ごと
+///   変わるので，これが条件に入っていないと `config_hash` が結果を決める値に盲目になる．
+/// - `llm_cache_path`: プロンプト→応答キャッシュの置き場．**値そのものは結果を決めない**
+///   （同じキャッシュ内容なら同じ応答になる）ので `hash_exclude` で `config_hash` から
+///   外す．どこを見ていたかは記録に残す．
 #[derive(Serialize)]
 pub struct RunConfigJson {
-    pub command: &'static str,
     pub population: usize,
     pub entrepreneurs: usize,
     pub network: String,
@@ -180,16 +187,25 @@ pub struct RunConfigJson {
     pub emergence_threshold: f64,
     pub canonical_mode: String,
     pub seed: Option<u64>,
+    pub mock: bool,
     pub llm_temperature: f32,
     pub llm_seed: u64,
-    pub output_dir: String,
+    pub llm_cache_path: Option<String>,
 }
 
+/// `config_hash` から外す JSON ポインタ（置き場でしかない値）．
+pub const HASH_EXCLUDE: [&str; 1] = ["/llm_cache_path"];
+
+/// `master_seed` の由来を指す JSON ポインタ．
+pub const SEED_POINTERS: [&str; 1] = ["/seed"];
+
 impl Config {
-    /// `config.json` 用の表現を組み立てる．
-    pub fn to_run_config_json(&self) -> RunConfigJson {
+    /// runvault の `parameters` 用の表現を組み立てる．
+    ///
+    /// `mock` は Config が持たない（どのクライアントを組むかは呼び出し側の判断で，
+    /// Config はモデルの条件だけを持つ）ので引数で受け取る．
+    pub fn to_parameters(&self, mock: bool) -> RunConfigJson {
         RunConfigJson {
-            command: "run",
             population: self.population,
             entrepreneurs: self.entrepreneurs,
             network: self.network.label().to_string(),
@@ -203,9 +219,10 @@ impl Config {
             emergence_threshold: self.emergence_threshold,
             canonical_mode: self.canonical_mode.label().to_string(),
             seed: self.seed,
+            mock,
             llm_temperature: self.llm.temperature,
             llm_seed: self.llm.seed,
-            output_dir: self.output_dir.clone(),
+            llm_cache_path: self.llm.cache_path.clone(),
         }
     }
 }

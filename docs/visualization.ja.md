@@ -2,7 +2,11 @@
 
 [English](visualization.md) | [日本語](visualization.ja.md)
 
-Python パッケージ `crsec-tools`（module `crsec_tools`）が Rust 出力を読み図を描く．ワークスペースルートで `uv sync` 後，`uv run crsec-tools <subcommand>` で実行する．依存: matplotlib, pandas, numpy, networkx．
+Python パッケージ `crsec-tools`（module `crsec_tools`）が Rust 出力を読み図を描く．ワークスペースルートで `uv sync` 後，`uv run crsec-tools <subcommand>` で実行する．依存: matplotlib, pandas, numpy, networkx, `runvault[read]`．
+
+run ディレクトリの解決は `runvault path` に委ねる（`results/` を走査して新しそうなディレクトリを当てにいくことはしない）．`--results-dir` / `--sweep-dir` を省略すると直近の run が対象になる．**図は run の外**（`<results-root>/crsec/figures/<run_slug>/`）に出す — `manifest.csv` は `finish()` が確定させるので，run が終わった後に作るものを中に足すとハッシュを持たないファイルが記録に混ざる．
+
+移行前の `results/<timestamp>/` も `--results-dir` に直接渡せば従来どおり読める．
 
 ## `visualize`
 
@@ -10,10 +14,10 @@ Python パッケージ `crsec-tools`（module `crsec_tools`）が Rust 出力を
 
 ```bash
 uv run crsec-tools visualize
-uv run crsec-tools visualize --results_dir results/20260524_153000
+uv run crsec-tools visualize --results-dir "$(runvault path --experiment crsec --latest --subcommand run --standalone)"
 ```
 
-`{results_dir}/figures/` に生成:
+`--standalone` を付けるのは，掃引・再現の子 run と取り違えないためである．`<results-root>/crsec/figures/<run_slug>/` に生成:
 
 - `emergence_curves.png` — 採用率・遵守率のラウンド推移（論文 Fig. 2 の形）．ともに 1.0 へ上昇するはず; 破線は 0.9 創発しきい．
 - `conflicts_timeseries.png` — ラウンドごとの社会的衝突数．共有規範が定着するにつれ初期急増→減少を期待．
@@ -21,44 +25,46 @@ uv run crsec-tools visualize --results_dir results/20260524_153000
 
 ## `visualize-sweep`
 
-`sweep` 出力ディレクトリの `sweep_summary.csv` を読む．
+sweep 親 run の子 run から «1 行 1 (セル × 試行)» の表を組み直して読む（掃引の表はディスクに無い）．
 
 ```bash
-uv run crsec-tools visualize-sweep --sweep_dir results/20260524_160000_sweep
+uv run crsec-tools visualize-sweep
+uv run crsec-tools visualize-sweep --sweep-dir "$(runvault path --experiment crsec --latest --subcommand sweep)"
 ```
 
-`{sweep_dir}/figures/` に生成:
+`<results-root>/crsec/figures/<run_slug>/` に生成:
 
-- `sweep_time_to_emergence_heatmap.png` — 人口 × WS-β 格子上の平均創発時刻（未創発 `-1` は平均から除外）．
+- `sweep_time_to_emergence_heatmap.png` — 人口 × WS-β 格子上の平均創発時刻（未創発は指標そのものが無く NaN なので平均から除外される）．
 - `sweep_adoption_heatmap.png` — 格子上の平均最終採用率．
 - `sweep_curves.png` — β に対する最終採用率（人口ごとの系列）と人口に対する平均創発時刻．
 
 ## `show-experiment-settings`
 
-設定（`run` は `config.json`，`sweep` は `sweep_config.json`）と，存在すれば `run_metadata.json` の LLM メタ（モデル・endpoint・温度・seed・cache-hit 率・収束・創発時刻）を表示する．
+run ディレクトリの `config.json`（条件は `parameters` の下）と run スコープ指標（収束・最終ステップ・創発時刻），`run.json` の `llm` ブロック（provider・モデル・温度）と cache-hit 率を表示する．`run` / `sweep` / `reproduce` の別は `run.json` の `subcommand` で判別する．
 
 ```bash
-uv run crsec-tools show-experiment-settings --results-dir results/latest
-uv run crsec-tools show-experiment-settings --results-dir results/latest --json
+uv run crsec-tools show-experiment-settings
+uv run crsec-tools show-experiment-settings --subcommand sweep
+uv run crsec-tools show-experiment-settings --results-dir "$(runvault path --experiment crsec --latest --subcommand reproduce)" --json
 ```
 
 ## `reproduce`
 
-論文の見出し的知見を一括再現して図を描く．`crsec reproduce` の `reproduce_summary.json` と `metrics.csv` を読む．`--run` を付けると先に Rust バイナリを実行する（`--mock` でオフライン）．`reproduce` サブコマンドは [CLI](cli.ja.md) を参照．
+論文の見出し的知見を一括再現して図を描く．`crsec reproduce` の **親 run**（試行平均の `scope=sweep` 指標と `reference.csv`）と **代表 run**（`replicate_index = 0` の子）の `metrics.csv` を読む．`--run` を付けると先に Rust バイナリを実行する（`--mock` でオフライン）．`reproduce` サブコマンドは [CLI](cli.ja.md) を参照．
 
 ```bash
 uv run crsec-tools reproduce --run --mock           # オフライン再現してから図を描く
 uv run crsec-tools reproduce --run --mock --quick   # 軽量な動作確認
-uv run crsec-tools reproduce                          # 既存の results/latest を可視化
+uv run crsec-tools reproduce                          # 直近の親 run を可視化
 uv run crsec-tools reproduce --json                   # 要約を JSON で出力
 ```
 
-`{results_dir}/figures/` の下に生成:
+`<results-root>/crsec/figures/<run_slug>/` の下に生成:
 
 - `emergence_trajectory.png` — 代表 run の採用率/遵守率，相異規範数（統合），衝突時系列（rise-then-fall）を 3 段で示す．
 - `descriptive_vs_injunctive.png` — 型別採用率トラジェクトリ（命令的 vs 記述的; 型別の創発時刻を併記）と型別の相異規範数．descriptive vs injunctive 深掘り: 命令的規範が記述的規範より先に創発する（Fact 7）．
 
-コンソールには観測 vs 論文のアンカー（PASS/OFF）と PASS 数も出力する．
+コンソールには集約と **論文値との差**（`reference.csv` の出典付き）を出す．許容帯つきの PASS/OFF は Rust 側 `crsec reproduce` のコンソール出力にある — 同じ閾値を Python と Rust の 2 箇所に置くと食い違う余地ができるため，こちらには置かない．
 
 ## 出力の解釈
 

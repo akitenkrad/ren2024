@@ -29,7 +29,7 @@ LLM 出力は socsim の bit 再現性の **外側** にある．設計は二層
 - **決定論的 socsim コア** — ネットワーク生成・活性化順（`RandomActivationScheduler`）・会話/観察相手のサンプリング（`ctx.rng`, ChaCha20）・スケジュール・指標・収束・**canonical-norm 同定**（後述）．seed が同じなら bit 単位で再現する．
 - **非決定的 LLM レイヤ** — 規範の創出，伝播の分析（衝突検出 + 会話判断 + 規範識別），評価のサニティ検査，遵守．`socsim-llm` の `CachingClient`（`hash(prompt+model)` → 応答キャッシュ）+ `temperature=0` + 固定 seed で擬似決定論化する．プロバイダ順は `socsim-llm` の `FallbackClient` による **Ollama 第一 → OpenAI フォールバック**．
 
-再現性の本体はモデルではなく **キャッシュ** である（warm キャッシュは同一応答を再生する）．各実行は `run_metadata.json` にモデル・endpoint・温度・seed・cache-hit 率を記録する．ローカル既定モデル（`llama3.2:latest`）は論文の GPT-3.5/4 と異なるため，再現目標は **定性的**（採用率は 1 へ上昇，衝突は初期急増→減少，injunctive が descriptive より先に創発）であり厳密な数値一致は狙わない．
+再現性の本体はモデルではなく **キャッシュ** である（warm キャッシュは同一応答を再生する）．各実行はモデル・provider・温度を runvault の `run.json` の `llm` ブロックに，呼び出し数と cache-hit 率を run スコープの指標に記録する．ローカル既定モデル（`llama3.2:latest`）は論文の GPT-3.5/4 と異なるため，再現目標は **定性的**（採用率は 1 へ上昇，衝突は初期急増→減少，injunctive が descriptive より先に創発）であり厳密な数値一致は狙わない．
 
 ## canonical-norm 同定
 
@@ -81,8 +81,10 @@ uv run crsec-tools visualize
 uv run crsec-tools reproduce --run --mock
 
 # 実行設定と LLM メタデータを確認
-uv run crsec-tools show-experiment-settings --results-dir results/latest
+uv run crsec-tools show-experiment-settings
 ```
+
+実行結果の置き場と同一性は [runvault](https://github.com/akitenkrad/rs-runvault) が持つ．出力は `<results-root>/crsec/<subcommand>_<timestamp>_<config_hash>_<uid>/` の run ディレクトリで，`runvault path --experiment crsec --latest --subcommand run --standalone` が直近の 1 本を返す．
 
 ## ドキュメント
 

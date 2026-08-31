@@ -29,7 +29,7 @@ LLM output is **outside** socsim's bit-reproducibility. The design splits into t
 - **Deterministic socsim core** — network generation, activation order (`RandomActivationScheduler`), conversation/observation partner sampling (`ctx.rng`, ChaCha20), scheduling, metrics, convergence, and the **canonical-norm identity** (see below). Given a seed this reproduces bit-for-bit.
 - **Non-deterministic LLM layer** — norm creation, the spreading analysis (conflict detection + decide-to-talk + norm identification), the evaluation sanity checks, and compliance. Pseudo-determinised by `socsim-llm`'s `CachingClient` (a `hash(prompt+model)` → response cache), `temperature=0` and a fixed seed. The provider order is **Ollama first → OpenAI fallback** via `socsim-llm`'s `FallbackClient`.
 
-The cache — not the model — is the reproducibility mechanism: a warm cache replays identical responses. Each run writes `run_metadata.json` recording the model, endpoint, temperature, seed and cache-hit rate. Because the local default model (`llama3.2:latest`) differs from the paper's GPT-3.5/4, reproduction targets are **qualitative** (adoption rises toward 1; conflicts rise then fall; injunctive norms emerge before descriptive ones), not exact numbers.
+The cache — not the model — is the reproducibility mechanism: a warm cache replays identical responses. Each run records the model, provider and temperature in the `llm` block of runvault's `run.json`, and the call count and cache-hit rate as run-scope metrics. Because the local default model (`llama3.2:latest`) differs from the paper's GPT-3.5/4, reproduction targets are **qualitative** (adoption rises toward 1; conflicts rise then fall; injunctive norms emerge before descriptive ones), not exact numbers.
 
 ## Canonical-norm identity
 
@@ -81,8 +81,10 @@ uv run crsec-tools visualize
 uv run crsec-tools reproduce --run --mock
 
 # Inspect the run's settings and LLM metadata
-uv run crsec-tools show-experiment-settings --results-dir results/latest
+uv run crsec-tools show-experiment-settings
 ```
+
+Where a result goes, and its identity, belong to [runvault](https://github.com/akitenkrad/rs-runvault). Each output is a run directory `<results-root>/crsec/<subcommand>_<timestamp>_<config_hash>_<uid>/`, and `runvault path --experiment crsec --latest --subcommand run --standalone` returns the most recent one.
 
 ## Documentation
 

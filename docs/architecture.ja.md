@@ -17,16 +17,18 @@ ren2024/
 │   │   ├── prompts.rs          CRSEC LLM 操作のプロンプト（KEY: value 契約）
 │   │   ├── parse.rs            構造化 LLM 応答の寛容なパーサ
 │   │   ├── mechanisms.rs       6 ライフサイクルメカニズム
-│   │   ├── simulation.rs       init_world + run / run_mock ドライバ + canonicalizer 配線 + 出力 writer
+│   │   ├── simulation.rs       init_world + run_with_client ドライバ + canonicalizer 配線
+│   │   ├── record.rs           runvault への記録（実験名 / 論文メタ / llm ブロック / 指標 / 規範イベント）
 │   │   ├── metrics.rs          採用率 / 遵守率 / 衝突 / 相異規範数（型別含む）/ 創発時刻
-│   │   ├── reproduce.rs        reproduce サブコマンド: 試行平均トラジェクトリ + 観測 vs 論文アンカー
+│   │   ├── reproduce.rs        reproduce の集約: 1 試行の抽出 + 試行平均セル + 観測 vs 論文アンカー + 論文値
 │   │   └── reproduce_mock.rs   オフライン run / reproduce 用の決定論的 scripted クライアント
 │   ├── examples/mock_smoke.rs  オフライン（live LLM 不要）スモーク
 │   └── tests/integration_test.rs   mock 駆動の統合テスト
 ├── tools/                       Python パッケージ `crsec-tools`（module `crsec_tools`）
-│   └── src/crsec_tools/{cli,visualize,visualize_sweep,show_experiment_settings,reproduce_paper}.py
+│   └── src/crsec_tools/{cli,visualize,visualize_sweep,sweep_summary,show_experiment_settings,reproduce_paper}.py
 ├── docs/                        bilingual ドキュメント（本ディレクトリ）
-└── results/                     実行時出力（gitignore 対象）
+└── results/                     runvault の results ルート（gitignore 対象）
+    └── crsec/<subcommand>_<timestamp>_<config_hash>_<uid>/   run ディレクトリ
 ```
 
 ## 二層決定論
@@ -36,7 +38,9 @@ socsim コアは決定論的で LLM を含まない．LLM 出力は bit 再現�
 - **決定論的 socsim コア（下層）**．単一 root シードから 2 ストリームを派生: `derive_seed(root,&[0])` が世界初期化（ネットワーク生成・プロフィール + 起業家割当）を，`derive_seed(root,&[1])` がエンジン（`RandomActivationScheduler` の活性化順・`ctx.rng` の会話/観察相手サンプリング）を駆動する．指標と canonical-norm 同定は状態の純関数なので決定論的．
 - **非決定的 LLM レイヤ（上層）**．`CrsecClient = CachingClient<Box<dyn LlmClient>>` でメカニズム内に閉じ込める．バックエンドは `FallbackClient<OllamaClient, OpenAiClient>` を `Box<dyn LlmClient>` に型消去したもの（socsim-llm が `impl LlmClient for Box<T>`（issue #26）を提供するため自前 newtype は不要）．`temperature=0` + 固定 seed + `hash(prompt+model)` → 応答キャッシュで擬似決定論化する．
 
-`run_metadata.json` にモデル・endpoint・温度・seed・cache-hit 率・収束・最終ステップ・創発時刻と `determinism_note` を記録する．
+モデル・provider・温度は runvault の `run.json` の `llm` ブロックが，呼び出し数と cache-hit は run スコープの指標 `llm_calls` / `llm_cache_hits` / `llm_cache_hit_rate` が持つ（率は呼び出しが 1 本も無いときに «0» ではなく «定義できない» ので，そのときは行そのものを書かない）．収束・最終ステップ・創発時刻も run スコープの指標．`determinism_note` は数でも条件でもないので `simulation::DETERMINISM_NOTE` とこのドキュメントに残す．
+
+`llm` ブロックのためにクライアントは `Run::start` の **前** に組む — モデル名と endpoint を知っているのはクライアントを組んだ側だけだからである（`simulation::run` / `run_mock` を消したのはこのため）．
 
 ## CRSEC ライフサイクル → メカニズム対応
 

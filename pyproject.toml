@@ -11,3 +11,6 @@ members = ["tools"]
 
 [tool.uv.sources]
 crsec-tools = { workspace = true }
+# runvault の Python 側 (run ディレクトリの読み取り)．Rust 側と同じリポジトリの
+# python/ サブディレクトリにある．
+runvault = { git = "https://github.com/akitenkrad/rs-runvault", subdirectory = "python" }

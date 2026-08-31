@@ -63,10 +63,10 @@ See [Visualization](visualization.md) for the heatmaps and curves.
 ## 6. Inspect exactly what a run talked to
 
 ```bash
-uv run crsec-tools show-experiment-settings --results-dir results/latest
+uv run crsec-tools show-experiment-settings
 ```
 
-This prints the config plus the LLM metadata (model, endpoint, temperature, seed, cache-hit rate, convergence, time-to-emergence) from `run_metadata.json`.
+This prints the run directory's conditions (`parameters` in `config.json`) plus the run-scope metrics (convergence, final step, time-to-emergence) and the `llm` block of `run.json` (provider, model, temperature) with the cache-hit rate.
 
 ## 7. Understand the design
 

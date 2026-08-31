@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 """reproduce_paper.py — Ren et al. (2024) CRSEC 見出し的知見の一括再現レポート + 図．
 
-Rust の `crsec reproduce` が書き出す `reproduce_summary.json`（試行平均セル・論文知見
-アンカー）と代表 run の `metrics.csv` を読み，CRSEC の中心的知見を 2 つの図で可視化
-しつつ PASS/off テーブルを表示する:
+Rust の `crsec reproduce` が起こす **sweep 親 run**（試行をまたいだ集約を `scope=sweep`
+の指標として持ち，論文の報告値を `reference.csv` に持つ）と，その **子 run**（試行 1 本
+ずつの `metrics.csv`）を読み，CRSEC の中心的知見を 2 つの図で可視化しつつ観測 vs 論文値の
+表を表示する:
 
     1. emergence_trajectory.png
-       代表 run の «採用率・遵守率»，«相異 canonical 規範数»，«社会的衝突数» のラウンド
-       推移．社会規範の創発（採用率↑）・統合（相異規範数の縮約）・衝突の rise-then-fall
-       を一望する（論文 Section 3 / Fig. 2 風）．
+       代表 run（`replicate_index = 0` の子）の «採用率・遵守率»，«相異 canonical 規範数»，
+       «社会的衝突数» のラウンド推移．社会規範の創発（採用率↑）・統合（相異規範数の縮約）・
+       衝突の rise-then-fall を一望する（論文 Section 3 / Fig. 2 風）．
     2. descriptive_vs_injunctive.png
        descriptive vs injunctive 深掘り．命令的（injunctive）規範と記述的（descriptive）
        規範の «型別採用率トラジェクトリ» を重ね描きし，論文 Fact 7「命令的規範が記述的
        規範より先に創発する」を可視化する．型別の相異規範数も併記する．
+
+許容帯つきの PASS/OFF は Rust 側のコンソールにある．同じ閾値を Python と Rust の 2 箇所に
+置くと食い違う余地ができるので，ここでは `reference.csv` の **論文値との差** を出す．
 
 `--run` を付けると先に Rust バイナリ（`cargo run --release -- reproduce`）を実行して
 最新結果を生成する．サンドボックス・CI では `--mock` も付けてライブ LLM を回避する．
@@ -20,18 +24,19 @@ Rust の `crsec reproduce` が書き出す `reproduce_summary.json`（試行平�
 Usage:
     uv run crsec-tools reproduce --run --mock          # mock で一括再現 + 図
     uv run crsec-tools reproduce --run --mock --quick  # 軽量版（動作確認用）
-    uv run crsec-tools reproduce                        # 既存 results/latest を可視化
-    uv run crsec-tools reproduce --results-dir results/reproduce_20260530_000000
+    uv run crsec-tools reproduce                        # 既存の親 run を可視化
+    uv run crsec-tools reproduce --results-dir "$(runvault path --experiment crsec --latest --subcommand reproduce)"
     uv run crsec-tools reproduce --json
 
 Outputs:
-    {results_dir}/figures/{emergence_trajectory,descriptive_vs_injunctive}.png
-    stdout: アンカーごとの PASS / OFF．
+    <results-root>/crsec/figures/<run_slug>/{emergence_trajectory,descriptive_vs_injunctive}.png
+    stdout: 集約と論文値との差．
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import subprocess
@@ -39,9 +44,18 @@ import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-import pandas as pd
+from runvault.read import (
+    config_parameters,
+    figures_dir,
+    load_run_meta,
+    metrics_wide,
+    run_scope_metrics,
+    runvault_path,
+    sweep_children,
+)
 
-from socsim_tools.io import resolve_results_dir
+# runvault の experiment 名（Rust 側 record::EXPERIMENT と揃える）．
+EXPERIMENT = "crsec"
 
 # --------------------------------------------------------------------------- #
 # 表示設定（CJK フォントが利用不能でも落ちないように try）
@@ -58,6 +72,25 @@ COLOR_CONFLICT = "#F44336"
 COLOR_NORMS = "#9C27B0"
 COLOR_INJ = "#E64A19"
 COLOR_DES = "#1565C0"
+
+#: 集約表の «指標名 → 表示ラベル»．
+CELL_LABELS = {
+    "mean_final_adoption": "最終 採用率̄",
+    "mean_final_compliance": "最終 遵守率̄",
+    "mean_peak_distinct": "相異規範数 ピーク̄",
+    "mean_final_distinct": "相異規範数 最終̄",
+    "mean_peak_conflicts": "衝突 ピーク̄",
+    "mean_final_conflicts": "衝突 最終̄",
+    "mean_time_to_emergence": "創発時刻̄ (採用率)",
+    "mean_tte_injunctive": "創発時刻̄ injunctive",
+    "mean_tte_descriptive": "創発時刻̄ descriptive",
+    "mean_final_adoption_injunctive": "最終採用率̄ injunctive",
+    "mean_final_adoption_descriptive": "最終採用率̄ descriptive",
+    "converged_frac": "収束した試行割合",
+    "consolidation_gap": "統合の差 (peak - final)",
+    "conflict_gap": "衝突の差 (peak - final)",
+    "fact7_gap": "Fact 7 の差 (des - inj)",
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -77,15 +110,27 @@ def _run_binary(*, mock: bool, quick: bool, seed: int, output_dir: str) -> None:
     subprocess.run(cmd, check=True)
 
 
-def _load_summary(results_dir: Path) -> dict:
-    path = results_dir / "reproduce_summary.json"
+# --------------------------------------------------------------------------- #
+# 読み取り
+# --------------------------------------------------------------------------- #
+
+
+def _references(parent_dir: Path) -> list[dict]:
+    """`reference.csv`（論文が報告した値）．無ければ空リスト．"""
+    path = parent_dir / "reference.csv"
     if not path.exists():
-        raise FileNotFoundError(
-            f"reproduce_summary.json が見つかりません: {path}\n"
-            f"  先に `crsec-tools reproduce --run --mock` を実行してください．"
-        )
-    with path.open(encoding="utf-8") as f:
-        return json.load(f)
+        return []
+    with path.open(newline="", encoding="utf-8") as f:
+        return list(csv.DictReader(f))
+
+
+def _representative(parent_dir: Path) -> Path | None:
+    """代表 run（`replicate_index = 0` の子）の run ディレクトリ．"""
+    for child in sweep_children(parent_dir):
+        rng = (load_run_meta(child) or {}).get("rng") or {}
+        if rng.get("replicate_index") == 0:
+            return Path(child)
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -93,14 +138,10 @@ def _load_summary(results_dir: Path) -> dict:
 # --------------------------------------------------------------------------- #
 
 
-def _emergence_trajectory(results_dir: Path, out_path: Path) -> None:
+def _emergence_trajectory(rep_dir: Path, out_path: Path) -> None:
     """代表 run の創発曲線・規範統合・衝突 rise-then-fall（3 段）．"""
-    path = results_dir / "metrics.csv"
-    if not path.exists():
-        print(f"  警告: metrics.csv が無いため emergence_trajectory をスキップ ({path})")
-        return
-    df = pd.read_csv(path)
-    t = df["t"]
+    df = metrics_wide(rep_dir / "metrics.csv")
+    t = df["step"]
 
     fig, axes = plt.subplots(3, 1, figsize=(9, 10), facecolor=COLOR_BG, sharex=True)
     fig.suptitle(
@@ -146,15 +187,10 @@ def _emergence_trajectory(results_dir: Path, out_path: Path) -> None:
     print(f"  保存: {out_path}")
 
 
-def _descriptive_vs_injunctive(summary: dict, results_dir: Path, out_path: Path) -> None:
+def _descriptive_vs_injunctive(cell: dict[str, float], rep_dir: Path, out_path: Path) -> None:
     """型別採用率トラジェクトリ + 型別相異規範数（Fact 7 の深掘り）．"""
-    path = results_dir / "metrics.csv"
-    if not path.exists():
-        print(f"  警告: metrics.csv が無いため descriptive_vs_injunctive をスキップ ({path})")
-        return
-    df = pd.read_csv(path)
-    t = df["t"]
-    cell = summary.get("cell", {})
+    df = metrics_wide(rep_dir / "metrics.csv")
+    t = df["step"]
     tte_inj = cell.get("mean_tte_injunctive")
     tte_des = cell.get("mean_tte_descriptive")
 
@@ -205,39 +241,34 @@ def _descriptive_vs_injunctive(summary: dict, results_dir: Path, out_path: Path)
 # --------------------------------------------------------------------------- #
 
 
-def _print_report(summary: dict, results_dir: Path) -> None:
+def _print_report(parent_dir: Path, cfg: dict, cell: dict[str, float],
+                  references: list[dict]) -> None:
     print("=" * 78)
     print("Ren et al. (2024) CRSEC — 見出し的知見 一括再現レポート")
-    print(f"  source: {results_dir}  (mode={summary.get('mode', '?')})")
+    print(f"  source: {parent_dir}  (mode={'mock' if cfg.get('mock') else 'live'})")
+    print(f"  N={cfg.get('population')} T={cfg.get('rounds')} runs={cfg.get('runs')}")
     print("=" * 78)
 
-    cell = summary.get("cell", {})
     print("\n[集計（試行平均）]")
-    print(f"  最終 採用率̄         : {cell.get('mean_final_adoption', 0):.3f}")
-    print(f"  最終 遵守率̄         : {cell.get('mean_final_compliance', 0):.3f}")
-    print(f"  相異規範数 ピーク→最終 : {cell.get('mean_peak_distinct', 0):.2f}"
-          f" → {cell.get('mean_final_distinct', 0):.2f}")
-    print(f"  衝突 ピーク→最終      : {cell.get('mean_peak_conflicts', 0):.2f}"
-          f" → {cell.get('mean_final_conflicts', 0):.2f}")
-    print(f"  創発時刻̄ inj / des    : {cell.get('mean_tte_injunctive', 0):.2f}"
-          f" / {cell.get('mean_tte_descriptive', 0):.2f}  (Fact 7: inj が先)")
-    print(f"  最終採用率̄ inj / des  : {cell.get('mean_final_adoption_injunctive', 0):.3f}"
-          f" / {cell.get('mean_final_adoption_descriptive', 0):.3f}")
+    for name, label in CELL_LABELS.items():
+        if name in cell:
+            print(f"  {label:<26}: {cell[name]:.3f}")
 
-    print("\n[論文知見アンカー（観測 vs 論文）]")
-    n_pass = 0
-    for a in summary["anchors"]:
-        hi = a["target_hi"]
-        hi_str = "∞" if hi is None or hi > 1e30 else f"{hi:.3f}"
-        status = "PASS" if a["pass"] else "OFF "
-        if a["pass"]:
-            n_pass += 1
-        print(f"  [{status}] {a['name']:<56} obs={a['observed']:.4f} "
-              f"target=[{a['target_lo']:.3f},{hi_str}] paper={a['paper']}")
+    if references:
+        print("\n[論文の報告値との差]")
+        for ref in references:
+            name = ref["name"]
+            paper = float(ref["value"])
+            obs = cell.get(name)
+            if obs is None:
+                print(f"  {name:<32} 論文={paper:.3f}  観測=（指標なし）")
+                continue
+            print(f"  {name:<32} 論文={paper:.3f}  観測={obs:.3f}  差={obs - paper:+.3f}")
+            print(f"    出典: {ref['source']}")
     print("-" * 78)
-    print(f"{n_pass}/{len(summary['anchors'])} アンカーが in-band")
     print("(中核知見: 社会規範の創発 / 規範の統合 / 衝突 rise-then-fall / "
           "Fact 7 命令的→記述的の創発順序)")
+    print("許容帯つきの PASS/OFF は Rust 側 `crsec reproduce` のコンソール出力にある．")
 
 
 # --------------------------------------------------------------------------- #
@@ -252,9 +283,11 @@ def main(argv: list[str] | None = None) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--results-dir", "--results_dir", default=None,
-                        help="reproduce_summary.json のあるディレクトリ（既定: results/latest）")
+                        help="reproduce 親 run のディレクトリ（既定: runvault path が返す直近の親）")
+    parser.add_argument("--results-root", "--results_root", default="results",
+                        help="runvault の results ルート (default: results)")
     parser.add_argument("--output-dir", "--output_dir", default=None,
-                        help="図の保存先（既定: {results_dir}/figures）")
+                        help="図の保存先（既定: <results-root>/crsec/figures/<run_slug>/）")
     parser.add_argument("--run", action="store_true",
                         help="先に Rust バイナリ（reproduce）を実行する．")
     parser.add_argument("--mock", action="store_true",
@@ -262,33 +295,47 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--quick", action="store_true",
                         help="--run 時に軽量モードで実行する（動作確認用）．")
     parser.add_argument("--seed", type=int, default=42, help="--run 時のシード基点．")
-    parser.add_argument("--cargo-output-dir", "--cargo_output_dir", default="results",
-                        help="--run 時に cargo の --output-dir へ渡すパス（既定: results）．")
     parser.add_argument("--json", action="store_true", help="JSON 形式で要約を出力する．")
     args = parser.parse_args(argv)
 
     if args.run:
         _run_binary(mock=args.mock, quick=args.quick, seed=args.seed,
-                    output_dir=args.cargo_output_dir)
+                    output_dir=args.results_root)
 
-    results_dir = resolve_results_dir(args.results_dir)
-    try:
-        summary = _load_summary(results_dir)
-    except FileNotFoundError as exc:
-        print(f"エラー: {exc}", file=sys.stderr)
+    parent_dir = Path(
+        args.results_dir
+        or runvault_path(EXPERIMENT, args.results_root, subcommand="reproduce")
+    )
+    if not (parent_dir / "run.json").exists():
+        print(f"エラー: reproduce 親 run が見つかりません: {parent_dir}\n"
+              f"  先に `crsec-tools reproduce --run --mock` を実行してください．",
+              file=sys.stderr)
         return 1
 
+    cfg = config_parameters(parent_dir) or {}
+    cell = run_scope_metrics(parent_dir)
+    references = _references(parent_dir)
+
     if args.json:
-        print(json.dumps(summary, indent=2, ensure_ascii=False))
+        print(json.dumps(
+            {"source": str(parent_dir), "config": cfg, "cell": cell,
+             "references": references},
+            indent=2, ensure_ascii=False))
         return 0
 
-    _print_report(summary, results_dir)
+    _print_report(parent_dir, cfg, cell, references)
 
-    out_dir = Path(args.output_dir) if args.output_dir else results_dir / "figures"
+    rep_dir = _representative(parent_dir)
+    if rep_dir is None:
+        print("警告: 代表 run（replicate_index = 0 の子）が見つからないため図をスキップします．")
+        return 0
+
+    out_dir = Path(args.output_dir) if args.output_dir else Path(figures_dir(parent_dir))
     os.makedirs(out_dir, exist_ok=True)
-    print(f"\n[図] 出力先: {out_dir}")
-    _emergence_trajectory(results_dir, out_dir / "emergence_trajectory.png")
-    _descriptive_vs_injunctive(summary, results_dir, out_dir / "descriptive_vs_injunctive.png")
+    print(f"\n[図] 代表 run: {rep_dir}")
+    print(f"[図] 出力先: {out_dir}")
+    _emergence_trajectory(rep_dir, out_dir / "emergence_trajectory.png")
+    _descriptive_vs_injunctive(cell, rep_dir, out_dir / "descriptive_vs_injunctive.png")
 
     print("-" * 78)
     return 0
