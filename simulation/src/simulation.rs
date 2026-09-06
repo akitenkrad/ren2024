@@ -25,9 +25,9 @@ use socsim_llm::MetadataCollector;
 use crate::config::{CanonicalMode, Config, LlmSettings, Network};
 use crate::llm::{llm_config, CrsecClient};
 use crate::mechanisms::{
-    empty_norm_db, ComplianceMechanism, ConvergenceMechanism, CreationMechanism,
-    EvaluationMechanism, ResetInteractions, SharedCanonicalizer, SharedClient, SharedMetadata,
-    SpreadingMechanism, SCRATCH_COMPLIED, SCRATCH_CONFLICTS, SCRATCH_CONVERGED,
+    empty_norm_db, no_observer, ComplianceMechanism, ConvergenceMechanism, CreationMechanism,
+    EvaluationMechanism, LlmObserver, ResetInteractions, SharedCanonicalizer, SharedClient,
+    SharedMetadata, SpreadingMechanism, SCRATCH_COMPLIED, SCRATCH_CONFLICTS, SCRATCH_CONVERGED,
 };
 use crate::metrics::{time_to_emergence, Metrics};
 use crate::norm::PersonalNorm;
@@ -135,11 +135,14 @@ pub fn build_canonicalizer(
     client: SharedClient,
     metadata: SharedMetadata,
     settings: LlmSettings,
+    observer: LlmObserver,
 ) -> SharedCanonicalizer {
     match mode {
         CanonicalMode::Deterministic => Rc::new(Canonicalizer::rule()),
         CanonicalMode::Llm => {
             let judge = move |a: &str, b: &str| -> bool {
+                // judge も 1 回のモデル呼び出しなので，メカニズム側と同じ単位で数える．
+                (observer.borrow_mut())();
                 let prompt = prompts::same_norm_prompt(a, b);
                 let mut c = client.borrow_mut();
                 match c.complete(&prompt, &llm_config(&settings)) {
@@ -162,6 +165,19 @@ pub fn build_canonicalizer(
 /// [`crate::reproduce_mock::build_reproduce_client`] を，テストは
 /// [`crate::llm::wrap_client`] でラップした `mock::ScriptedClient` を渡す．
 pub fn run_with_client(cfg: &Config, client: CrsecClient) -> Result<SimulationResult, String> {
+    run_with_client_observed(cfg, client, no_observer())
+}
+
+/// [`run_with_client`] と同じものを，LLM 呼び出し 1 回ごとに `observer` を突きながら
+/// 実行する．
+///
+/// 元の入口は no-op の観測子を渡す薄いラッパとして残してあるので，テストも例も
+/// 振る舞いが変わらない．
+pub fn run_with_client_observed(
+    cfg: &Config,
+    client: CrsecClient,
+    observer: LlmObserver,
+) -> Result<SimulationResult, String> {
     let root = cfg.seed.unwrap_or_else(rand::random);
 
     let mut init_rng = SimRng::from_seed(derive_seed(root, &[RNG_WORLD_INIT]));
@@ -181,6 +197,7 @@ pub fn run_with_client(cfg: &Config, client: CrsecClient) -> Result<SimulationRe
         Rc::clone(&shared_client),
         Rc::clone(&shared_meta),
         cfg.llm.clone(),
+        Rc::clone(&observer),
     );
 
     let mut sim = SimulationBuilder::new(world)
@@ -191,22 +208,26 @@ pub fn run_with_client(cfg: &Config, client: CrsecClient) -> Result<SimulationRe
             Rc::clone(&shared_client),
             Rc::clone(&shared_meta),
             cfg.llm.clone(),
+            Rc::clone(&observer),
         )))
         .add_mechanism(Box::new(ComplianceMechanism::new(
             Rc::clone(&shared_client),
             Rc::clone(&shared_meta),
             cfg.llm.clone(),
+            Rc::clone(&observer),
         )))
         .add_mechanism(Box::new(SpreadingMechanism::new(
             Rc::clone(&shared_client),
             Rc::clone(&shared_meta),
             cfg.llm.clone(),
             Rc::clone(&shared_canon),
+            Rc::clone(&observer),
         )))
         .add_mechanism(Box::new(EvaluationMechanism::new(
             Rc::clone(&shared_client),
             Rc::clone(&shared_meta),
             cfg.llm.clone(),
+            Rc::clone(&observer),
         )))
         .add_mechanism(Box::new(ConvergenceMechanism::new(
             cfg.convergence_window,

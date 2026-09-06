@@ -50,6 +50,23 @@ pub type SharedMetadata = Rc<RefCell<MetadataCollector>>;
 /// 共有 canonicalizer（規範同定の方式; rule = 決定論 / llm = 意味判定）．
 pub type SharedCanonicalizer = Rc<Canonicalizer<'static>>;
 
+/// LLM 呼び出し 1 回ごとに突かれる観測子．
+///
+/// 費用が乗っているのはラウンドではなく «モデル呼び出し 1 回» である．1 ラウンドは
+/// 遵守 1 + 伝播 2 + 評価 n をエージェントごとに投げるので，N=4・1 ラウンドの実測で
+/// 17 回（≒ 1 人あたり 4.25 回）だった．ローカルの llama3.2 で 1 呼び出し 1.72s
+/// なので，既定の N=10 では **1 ラウンドが約 73 秒**になる — ラウンドを数えていたら
+/// 1 分以上ずっと同じ数のままである．
+///
+/// 借用ではなく共有にするのは，メカニズムがエンジンへ `Box<dyn Mechanism<_>>` として
+/// 入る（= `'static`）ため，呼び出し側の `Stage` を借用できないからである．
+pub type LlmObserver = Rc<RefCell<dyn FnMut()>>;
+
+/// 何も数えない観測子（進捗を報告しない呼び出し側向け）．
+pub fn no_observer() -> LlmObserver {
+    Rc::new(RefCell::new(|| {}))
+}
+
 /// 当ラウンドの遵守者数・衝突数を scratch へ渡す key（run ドライバが読む）．
 pub const SCRATCH_COMPLIED: &str = "complied";
 pub const SCRATCH_CONFLICTS: &str = "conflicts";
@@ -58,13 +75,19 @@ pub const SCRATCH_CONVERGED: &str = "converged";
 /// 共有シーンの記述（プロンプトに渡すコンテキスト; CRSEC の Smallville「Hobbs Café」相当）．
 const SCENE: &str = "a shared community café where members gather, talk, and observe one another";
 
-/// LLM を呼び出し本文を取り出すヘルパ（メタデータも記録する）．
+/// LLM を呼び出し本文を取り出すヘルパ（メタデータも記録し，観測子を突く）．
+///
+/// メカニズム側の 4 つの呼び出し口（創出・遵守・伝播・評価）はすべてここを通るので，
+/// 進捗の 1 単位を数える場所もここ 1 箇所で足りる．数えるのは «試みた呼び出し» なので，
+/// 応答が返る前に突く — 失敗して run ごと落ちる呼び出しも 1 回は 1 回である．
 fn complete(
     client: &SharedClient,
     metadata: &SharedMetadata,
     settings: &LlmSettings,
+    observer: &LlmObserver,
     prompt: &str,
 ) -> Result<String> {
+    (observer.borrow_mut())();
     let mut c = client.borrow_mut();
     let resp = c
         .complete(prompt, &llm_config(settings))
@@ -107,14 +130,21 @@ pub struct CreationMechanism {
     client: SharedClient,
     metadata: SharedMetadata,
     settings: LlmSettings,
+    observer: LlmObserver,
 }
 
 impl CreationMechanism {
-    pub fn new(client: SharedClient, metadata: SharedMetadata, settings: LlmSettings) -> Self {
+    pub fn new(
+        client: SharedClient,
+        metadata: SharedMetadata,
+        settings: LlmSettings,
+        observer: LlmObserver,
+    ) -> Self {
         CreationMechanism {
             client,
             metadata,
             settings,
+            observer,
         }
     }
 }
@@ -141,7 +171,13 @@ impl Mechanism<CrsecWorld> for CreationMechanism {
                 .unwrap_or(true);
             if profile.is_entrepreneur && db_empty {
                 let prompt = prompts::create_norm_prompt(&profile, SCENE);
-                let text = complete(&self.client, &self.metadata, &self.settings, &prompt)?;
+                let text = complete(
+                    &self.client,
+                    &self.metadata,
+                    &self.settings,
+                    &self.observer,
+                    &prompt,
+                )?;
                 if let Some(norm) = parse::created_norm(&text) {
                     ctx.world.norm_db.entry(id).or_default().push(norm);
                 }
@@ -163,14 +199,21 @@ pub struct ComplianceMechanism {
     client: SharedClient,
     metadata: SharedMetadata,
     settings: LlmSettings,
+    observer: LlmObserver,
 }
 
 impl ComplianceMechanism {
-    pub fn new(client: SharedClient, metadata: SharedMetadata, settings: LlmSettings) -> Self {
+    pub fn new(
+        client: SharedClient,
+        metadata: SharedMetadata,
+        settings: LlmSettings,
+        observer: LlmObserver,
+    ) -> Self {
         ComplianceMechanism {
             client,
             metadata,
             settings,
+            observer,
         }
     }
 }
@@ -196,7 +239,13 @@ impl Mechanism<CrsecWorld> for ComplianceMechanism {
             }
             let refs: Vec<&PersonalNorm> = qualified.iter().collect();
             let prompt = prompts::compliance_prompt(&profile, &refs, SCENE);
-            let text = complete(&self.client, &self.metadata, &self.settings, &prompt)?;
+            let text = complete(
+                &self.client,
+                &self.metadata,
+                &self.settings,
+                &self.observer,
+                &prompt,
+            )?;
             if parse::yes(&text, "COMPLY") {
                 complied += 1;
             }
@@ -222,6 +271,7 @@ pub struct SpreadingMechanism {
     metadata: SharedMetadata,
     settings: LlmSettings,
     canon: SharedCanonicalizer,
+    observer: LlmObserver,
 }
 
 impl SpreadingMechanism {
@@ -230,12 +280,14 @@ impl SpreadingMechanism {
         metadata: SharedMetadata,
         settings: LlmSettings,
         canon: SharedCanonicalizer,
+        observer: LlmObserver,
     ) -> Self {
         SpreadingMechanism {
             client,
             metadata,
             settings,
             canon,
+            observer,
         }
     }
 
@@ -269,7 +321,13 @@ impl SpreadingMechanism {
         let refs: Vec<&PersonalNorm> = sender_qualified.iter().collect();
 
         let prompt = prompts::spreading_prompt(&sp, &rp, &refs, is_observation, SCENE);
-        let text = complete(&self.client, &self.metadata, &self.settings, &prompt)?;
+        let text = complete(
+            &self.client,
+            &self.metadata,
+            &self.settings,
+            &self.observer,
+            &prompt,
+        )?;
 
         let conflict = parse::yes(&text, "CONFLICT");
         let talk = is_observation || parse::yes(&text, "TALK");
@@ -374,14 +432,21 @@ pub struct EvaluationMechanism {
     client: SharedClient,
     metadata: SharedMetadata,
     settings: LlmSettings,
+    observer: LlmObserver,
 }
 
 impl EvaluationMechanism {
-    pub fn new(client: SharedClient, metadata: SharedMetadata, settings: LlmSettings) -> Self {
+    pub fn new(
+        client: SharedClient,
+        metadata: SharedMetadata,
+        settings: LlmSettings,
+        observer: LlmObserver,
+    ) -> Self {
         EvaluationMechanism {
             client,
             metadata,
             settings,
+            observer,
         }
     }
 }
@@ -425,7 +490,13 @@ impl Mechanism<CrsecWorld> for EvaluationMechanism {
                     ctx.world.qualified_norms(id).into_iter().cloned().collect();
                 let refs: Vec<&PersonalNorm> = existing.iter().collect();
                 let prompt = prompts::evaluation_prompt(&profile, &candidate, &refs);
-                let text = complete(&self.client, &self.metadata, &self.settings, &prompt)?;
+                let text = complete(
+                    &self.client,
+                    &self.metadata,
+                    &self.settings,
+                    &self.observer,
+                    &prompt,
+                )?;
                 if parse::promote_decision(&text) {
                     if let Some(v) = ctx.world.norm_db.get_mut(&id) {
                         if let Some(n) = v.get_mut(ci) {

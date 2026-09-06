@@ -14,11 +14,13 @@
 //! 出力の置き場と同一性は runvault が持つ．タイムスタンプ付きディレクトリも `latest`
 //! シンボリックリンクもこちらでは作らず，`Run::start` が決めた run ディレクトリへ書く．
 
+use std::cell::RefCell;
 use std::fs;
 use std::path::Path;
+use std::rc::Rc;
 
 use clap::{Parser, Subcommand};
-use runvault::{Lineage, Run, RunOptions};
+use runvault::{Lineage, Run, RunOptions, Stage};
 use serde::Serialize;
 
 use crsec_simulation::config::{
@@ -26,12 +28,13 @@ use crsec_simulation::config::{
     SEED_POINTERS,
 };
 use crsec_simulation::llm::{build_live_client, CrsecClient};
+use crsec_simulation::mechanisms::LlmObserver;
 use crsec_simulation::record::{self, DOMAIN, EXPERIMENT, REPO_ID, SWEEP_SCOPE};
 use crsec_simulation::reproduce::{
     self, ReproCell, ReproTrial, ReproduceArgs as ReproduceParams, PAPER_VALUES,
 };
 use crsec_simulation::reproduce_mock::build_reproduce_client;
-use crsec_simulation::simulation::{run_with_client, SimulationResult};
+use crsec_simulation::simulation::{run_with_client_observed, SimulationResult};
 
 // ---------------------------------------------------------------------------
 // CLI 定義
@@ -382,6 +385,35 @@ fn ensure_cache_dir(settings: &LlmSettings) {
     }
 }
 
+/// LLM 呼び出しを数える stage を，メカニズムの中から突ける形にして渡す．
+///
+/// 数える場所は `mechanisms::complete` の中である．メカニズムはエンジンへ
+/// `Box<dyn Mechanism<_>>` として入るので `'static` であり，呼び出し側の `Stage` を
+/// 借用できない — そこで `Rc` で共有し，走り終えたあとに [`close_shared`] で取り出して
+/// 閉じる．
+fn share_stage(stage: Stage) -> (Rc<RefCell<Option<Stage>>>, LlmObserver) {
+    let cell = Rc::new(RefCell::new(Some(stage)));
+    let observer: LlmObserver = {
+        let cell = Rc::clone(&cell);
+        Rc::new(RefCell::new(move || {
+            if let Some(stage) = cell.borrow_mut().as_mut() {
+                stage.tick();
+            }
+        }))
+    };
+    (cell, observer)
+}
+
+/// 共有していた stage を取り出して閉じる．
+///
+/// manifest.csv は `finish()` で封をされる．その後に 1 行足せば，manifest が食い違う
+/// ダイジェストを持つことになる．
+fn close_shared(cell: &Rc<RefCell<Option<Stage>>>) {
+    if let Some(stage) = cell.borrow_mut().take() {
+        stage.close();
+    }
+}
+
 /// LLM クライアントを組む．
 ///
 /// `run.json` の `llm` ブロックに書くモデル名と endpoint は，実際に応答するバックエンドから
@@ -411,6 +443,7 @@ fn run_child(
     results_root: &str,
     sweep_id: &str,
     parent_run_uid: &str,
+    observer: LlmObserver,
 ) -> SimulationResult {
     let client = build_client(&cfg.llm, mock);
     let llm = record::llm_block(
@@ -440,7 +473,8 @@ fn run_child(
     )
     .expect("runvault: 子 run の開始に失敗");
 
-    let result = run_with_client(cfg, client).unwrap_or_else(|e| panic!("実行に失敗: {e}"));
+    let result = run_with_client_observed(cfg, client, observer)
+        .unwrap_or_else(|e| panic!("実行に失敗: {e}"));
     record::log_simulation(&mut child, &result);
     record::log_norms(&mut child, &result);
     child.finish().expect("runvault: 子 run の完了に失敗");
@@ -532,7 +566,19 @@ fn cmd_run(args: RunArgs) {
     );
     println!("-------------------------------------------------");
 
-    let result = run_with_client(&cfg, client).unwrap_or_else(|e| panic!("実行に失敗: {}", e));
+    // 進捗の 1 単位は «モデル呼び出し 1 回»．ラウンドは単位にならない — 1 ラウンドは
+    // エージェントごとに 遵守 1 + 伝播 2 + 評価 n を投げるので，N=4・1 ラウンドの実測で
+    // 17 回（1 人あたり 4.25 回）だった．ローカルの llama3.2 で 1 呼び出し 1.72s なので，
+    // 既定の N=10 では 1 ラウンドが約 73 秒になり，ラウンドを数えていたら 1 分以上
+    // 同じ数のままになる．
+    //
+    // 分母は持たない．1 ラウンドの呼び出し数は «適格規範を持つ人数» と «未評価候補の
+    // 件数» で毎ラウンド変わり，`ConvergenceMechanism` が適格集合の安定で
+    // `request_stop` するのでラウンド数も走る前には決まらない．
+    let (cell, observer) = share_stage(rv.unbounded_stage("llm calls"));
+    let result = run_with_client_observed(&cfg, client, observer)
+        .unwrap_or_else(|e| panic!("実行に失敗: {}", e));
+    close_shared(&cell);
 
     record::log_simulation(&mut rv, &result);
     record::log_norms(&mut rv, &result);
@@ -654,6 +700,13 @@ fn cmd_sweep(args: SweepArgs) {
 
     for &population in &populations {
         for &beta in &betas {
+            // 格子点ごとに別の stage にする．単位は run と同じ «モデル呼び出し 1 回» で，
+            // 分母を持たない stage は数を出すだけなので，1 本の通し番号のままでは
+            // スイープのどこにいるかが読めない — stage 名がそれを言う．人口が変われば
+            // 1 ラウンドあたりの呼び出し数も変わるので，人口をまたいで 1 本にすると
+            // 行の間隔の意味も揃わない．
+            let (stage_cell, observer) =
+                share_stage(parent.unbounded_stage(&format!("N={population} β={beta:.3}")));
             for run_idx in 0..args.runs {
                 // 各条件に独立なシードを派生（explicit identity）．
                 let seed = socsim_core::derive_seed(
@@ -687,6 +740,7 @@ fn cmd_sweep(args: SweepArgs) {
                     &args.output_dir,
                     &sweep_id,
                     &parent_run_uid,
+                    Rc::clone(&observer),
                 );
                 let last = result.metrics_history.last().unwrap();
                 if let Some((_, values)) = adoption_by_population
@@ -698,6 +752,7 @@ fn cmd_sweep(args: SweepArgs) {
 
                 done += 1;
             }
+            close_shared(&stage_cell);
             println!(
                 "[{}/{}] population={} ws_beta={:.3} 完了 ({} 試行)",
                 done, n_total, population, beta, args.runs,
@@ -818,6 +873,11 @@ fn cmd_reproduce(args: ReproduceArgs) {
     println!("-------------------------------------------------");
 
     // 試行 1 本ずつが模型の別々の実行なので，それぞれを子 run にする．
+    // 単位は run と同じ «モデル呼び出し 1 回»．試行は既定 3 本しかなく，1 本が
+    // N=12 × T=48 ラウンド ≒ 2,400 呼び出し（実測 1.72s/回 なら約 1 時間）なので，
+    // 試行を数えても «3 本のうち何本目» しか分からない．分母を持たない理由も run と
+    // 同じ．
+    let (stage_cell, observer) = share_stage(parent.unbounded_stage("llm calls"));
     let mut trials: Vec<ReproTrial> = Vec::with_capacity(args.runs.max(1));
     for run_idx in 0..args.runs.max(1) {
         let seed = reproduce::trial_seed(args.seed, population, run_idx);
@@ -831,6 +891,7 @@ fn cmd_reproduce(args: ReproduceArgs) {
             &args.output_dir,
             &sweep_id,
             &parent_run_uid,
+            Rc::clone(&observer),
         );
         trials.push(ReproTrial::from_result(
             &result,
@@ -838,6 +899,8 @@ fn cmd_reproduce(args: ReproduceArgs) {
             rounds,
         ));
     }
+
+    close_shared(&stage_cell);
 
     let cell = ReproCell::from_trials(&trials, args.runs);
     let anchors = reproduce::build_anchors(&cell, args.emergence_threshold);
