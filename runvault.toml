@@ -1,3 +1,198 @@
-# Metric descriptions are not written yet (MYTASK-3382). Until they are,
-# runvault records undeclared metrics instead of refusing them.
-require_docs = false
+# 指標が何を測っているか (runvault の宣言．rs-runvault docs/metrics.ja.md)．
+#
+# 名前は `simulation/src/record.rs` と `simulation/src/main.rs` が記録するものと一致していなければならない．
+#
+# `direction` は «値が大きいほど良いか»．模型の状態や到達量は成績ではないので
+# `none` とし，再現精度やキャッシュ効率のように評価方向が定まる量だけ `up` /
+# `down` とする．
+
+[metrics."adoption_rate"]
+meaning   = "最頻の適格 canonical 規範を保有するエージェントの割合"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."compliance_rate"]
+meaning   = "そのラウンドで規範を遵守したエージェントの割合"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."n_conflicts"]
+meaning   = "そのラウンドで検出された社会的衝突の数"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."n_distinct_norms"]
+meaning   = "集団が保有する相異なる適格 canonical 規範の数"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."n_qualified_holders"]
+meaning   = "適格規範を 1 件以上持つエージェント数"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."adoption_injunctive"]
+meaning   = "最頻の命令的規範を保有するエージェントの割合"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."adoption_descriptive"]
+meaning   = "最頻の記述的規範を保有するエージェントの割合"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."n_distinct_injunctive"]
+meaning   = "相異なる適格な命令的規範の数"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."n_distinct_descriptive"]
+meaning   = "相異なる適格な記述的規範の数"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."converged"]
+meaning   = "収束して終わったなら 1，打ち切りなら 0"
+unit      = "boolean"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."final_step"]
+meaning   = "シミュレーションが停止したステップ数"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."time_to_emergence"]
+meaning   = "採用率が設定しきい値へ初めて達したラウンド"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."llm_calls"]
+meaning   = "この run が行った LLM の呼び出し回数"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."llm_cache_hits"]
+meaning   = "そのうちキャッシュで済んだ回数"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."llm_cache_hit_rate"]
+meaning   = "LLM 呼び出しのうちキャッシュで済んだ割合"
+unit      = "ratio"
+direction = "up"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."mean_final_adoption"]
+meaning   = "試行群にわたる最終採用率の平均"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."mean_final_compliance"]
+meaning   = "試行群にわたる最終遵守率の平均"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."mean_final_distinct"]
+meaning   = "試行群にわたる最終相異規範数の平均"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."mean_peak_distinct"]
+meaning   = "試行群にわたる相異規範数のピークの平均"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."mean_peak_conflicts"]
+meaning   = "試行群にわたる衝突数のピークの平均"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."mean_final_conflicts"]
+meaning   = "試行群にわたる最終衝突数の平均"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."mean_time_to_emergence"]
+meaning   = "試行群にわたる規範創発時刻の平均"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."mean_tte_injunctive"]
+meaning   = "試行群にわたる命令的規範の創発時刻の平均"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."mean_tte_descriptive"]
+meaning   = "試行群にわたる記述的規範の創発時刻の平均"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."mean_final_adoption_injunctive"]
+meaning   = "試行群にわたる命令的規範の最終採用率の平均"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."mean_final_adoption_descriptive"]
+meaning   = "試行群にわたる記述的規範の最終採用率の平均"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."converged_frac"]
+meaning   = "収束した試行の割合"
+unit      = "ratio"
+direction = "up"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."consolidation_gap"]
+meaning   = "相異規範数のピークから最終値までの減少量"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."conflict_gap"]
+meaning   = "衝突数のピークから最終値までの減少量"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."fact7_gap"]
+meaning   = "記述的規範の平均創発時刻から命令的規範の平均創発時刻を引いた差"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
