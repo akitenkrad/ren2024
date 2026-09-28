@@ -86,6 +86,11 @@ uv run crsec-tools show-experiment-settings
 
 実行結果の置き場と同一性は [runvault](https://github.com/akitenkrad/rs-runvault) が持つ．出力は `<results-root>/crsec/<subcommand>_<timestamp>_<config_hash>_<uid>/` の run ディレクトリで，`runvault path --experiment crsec --latest --subcommand run --standalone` が直近の 1 本を返す．
 
+
+## Scratch run
+
+開発中・デバッグ中・動作確認の実行には `--scratch` を付ける．run は `results/_scratch/` に作られ，同期されない．最新の scratch run は `runvault path --scratch` で取得できる．
+
 ## ドキュメント
 
 - [ユースケース](docs/usecases.ja.md) — 本プロジェクトでできること（他ドキュメントへの導線）．

@@ -48,6 +48,9 @@ use crsec_simulation::simulation::{run_with_client_observed, SimulationResult};
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+    /// Development run: write it under results/_scratch/ so it is never synced to the vault.
+    #[arg(long, global = true)]
+    scratch: bool,
 
     /// Ollama 接続先 URL（指定時は環境変数 OLLAMA_HOST を上書きする）．
     #[arg(long, global = true)]
@@ -444,6 +447,7 @@ fn run_child(
     sweep_id: &str,
     parent_run_uid: &str,
     observer: LlmObserver,
+    scratch: bool,
 ) -> SimulationResult {
     let client = build_client(&cfg.llm, mock);
     let llm = record::llm_block(
@@ -454,6 +458,7 @@ fn run_child(
     let parameters = cfg.to_parameters(mock);
     let mut child = Run::start(
         RunOptions::new(EXPERIMENT, subcommand)
+            .scratch(scratch)
             .repo_id(REPO_ID)
             .domain(DOMAIN)
             .results_root(results_root)
@@ -485,7 +490,7 @@ fn run_child(
 // run
 // ---------------------------------------------------------------------------
 
-fn cmd_run(args: RunArgs) {
+fn cmd_run(args: RunArgs, scratch: bool) {
     let network = parse_network(&args.network).unwrap_or_else(|e| panic!("{}", e));
     let canonical_mode =
         parse_canonical_mode(&args.canonical_mode).unwrap_or_else(|e| panic!("{}", e));
@@ -523,6 +528,7 @@ fn cmd_run(args: RunArgs) {
     let parameters = cfg.to_parameters(args.mock);
     let mut rv = Run::start(
         RunOptions::new(EXPERIMENT, "run")
+            .scratch(scratch)
             .repo_id(REPO_ID)
             .domain(DOMAIN)
             .results_root(&args.output_dir)
@@ -621,7 +627,7 @@ fn cmd_run(args: RunArgs) {
 // sweep
 // ---------------------------------------------------------------------------
 
-fn cmd_sweep(args: SweepArgs) {
+fn cmd_sweep(args: SweepArgs, scratch: bool) {
     let network: Network = parse_network(&args.network).unwrap_or_else(|e| panic!("{}", e));
     let populations: Vec<usize> = split_csv(&args.population_values)
         .iter()
@@ -662,6 +668,7 @@ fn cmd_sweep(args: SweepArgs) {
     };
     let parent = Run::start(
         RunOptions::new(EXPERIMENT, "sweep")
+            .scratch(scratch)
             .repo_id(REPO_ID)
             .domain(DOMAIN)
             .results_root(&args.output_dir)
@@ -741,6 +748,7 @@ fn cmd_sweep(args: SweepArgs) {
                     &sweep_id,
                     &parent_run_uid,
                     Rc::clone(&observer),
+                    scratch,
                 );
                 let last = result.metrics_history.last().unwrap();
                 if let Some((_, values)) = adoption_by_population
@@ -787,7 +795,7 @@ fn cmd_sweep(args: SweepArgs) {
 // reproduce
 // ---------------------------------------------------------------------------
 
-fn cmd_reproduce(args: ReproduceArgs) {
+fn cmd_reproduce(args: ReproduceArgs, scratch: bool) {
     let network = parse_network(&args.network).unwrap_or_else(|e| panic!("{}", e));
     let canonical_mode =
         parse_canonical_mode(&args.canonical_mode).unwrap_or_else(|e| panic!("{}", e));
@@ -840,6 +848,7 @@ fn cmd_reproduce(args: ReproduceArgs) {
     };
     let mut parent = Run::start(
         RunOptions::new(EXPERIMENT, "reproduce")
+            .scratch(scratch)
             .repo_id(REPO_ID)
             .domain(DOMAIN)
             .results_root(&args.output_dir)
@@ -892,6 +901,7 @@ fn cmd_reproduce(args: ReproduceArgs) {
             &sweep_id,
             &parent_run_uid,
             Rc::clone(&observer),
+            scratch,
         );
         trials.push(ReproTrial::from_result(
             &result,
@@ -983,12 +993,13 @@ fn cmd_reproduce(args: ReproduceArgs) {
 
 fn main() {
     let cli = Cli::parse();
+    let scratch = cli.scratch;
     if let Some(host) = cli.ollama_host.as_deref() {
         std::env::set_var("OLLAMA_HOST", host);
     }
     match cli.command {
-        Commands::Run(args) => cmd_run(args),
-        Commands::Sweep(args) => cmd_sweep(args),
-        Commands::Reproduce(args) => cmd_reproduce(args),
+        Commands::Run(args) => cmd_run(args, scratch),
+        Commands::Sweep(args) => cmd_sweep(args, scratch),
+        Commands::Reproduce(args) => cmd_reproduce(args, scratch),
     }
 }
